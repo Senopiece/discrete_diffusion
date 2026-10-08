@@ -1,6 +1,6 @@
 # Discrete diffusion lab
 
-Small research project for continuous Gaussian DDPM experiments over 16-dimensional embeddings of synthetic binary 32×32 mazes. The experiment notebook and reusable code live under `notebooks/`; architecture details are documented in `docs/`.
+Small research project for continuous Gaussian DDPM experiments of synthetic binary 32×32 mazes. The experiment notebook and reusable code live under `notebooks/`; architecture details are documented in `docs/`.
 
 ## Setup
 
