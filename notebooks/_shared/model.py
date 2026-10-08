@@ -1,4 +1,4 @@
-"""A small timestep-conditioned U-Net for epsilon-prediction DDPMs."""
+"""A small timestep-conditioned U-Net for image denoising experiments."""
 
 import math
 
@@ -31,7 +31,7 @@ def decode_probabilities(
 
 
 def sinusoidal_timestep_embedding(timesteps: torch.Tensor, dim: int) -> torch.Tensor:
-    """Sinusoidal embedding for integer diffusion steps."""
+    """Sinusoidal embedding for integer or continuous scalar timesteps."""
     half = dim // 2
     scale = math.log(10_000) / max(half - 1, 1)
     frequencies = torch.exp(
@@ -68,17 +68,22 @@ class ResBlock(nn.Module):
 
 
 class Denoiser(nn.Module):
-    """Predict Gaussian noise for a 16-channel image at a given timestep."""
+    """Predict per-pixel image targets from an input image and timestep."""
 
     def __init__(
         self,
         embedding_dim: int = 16,
+        output_dim: int | None = None,
         base_channels: int = 64,
         time_dim: int = 128,
     ):
         super().__init__()
         if embedding_dim < 2:
             raise ValueError("embedding_dim must be >= 2 for binary labels")
+        if output_dim is None:
+            output_dim = embedding_dim
+        if output_dim < 1:
+            raise ValueError("output_dim must be positive")
         if base_channels % 8:
             raise ValueError("base_channels must be divisible by 8")
         c1, c2, c3 = base_channels, base_channels * 2, base_channels * 4
@@ -102,7 +107,7 @@ class Denoiser(nn.Module):
         self.up32 = nn.Conv2d(c2, c1, kernel_size=3, padding=1)
         self.dec32 = ResBlock(c1 * 2, c1, time_dim)
         self.output_norm = nn.GroupNorm(8, c1)
-        self.output = nn.Conv2d(c1, embedding_dim, kernel_size=3, padding=1)
+        self.output = nn.Conv2d(c1, output_dim, kernel_size=3, padding=1)
 
     def forward(self, x: torch.Tensor, timesteps: torch.Tensor) -> torch.Tensor:
         time_embedding = self.time_mlp(
