@@ -9,5 +9,5 @@ uv sync
 uv run jupyter lab
 ```
 
-The project installs CUDA 12.8-enabled PyTorch wheels for NVIDIA GPUs. Select the project `.venv` kernel in Jupyter, then open `notebooks/01_maze_discrete_diffusion.ipynb`. Run its cells manually. Training checkpoints are written to the ignored `artifacts/` directory.
+The project installs CUDA 12.8-enabled PyTorch wheels for NVIDIA GPUs. Select the project `.venv` kernel in Jupyter, then open either `notebooks/01_maze_discrete_diffusion.ipynb` (DDPM) or `notebooks/02_maze_flow_matching.ipynb` (flow matching). Run notebook cells manually. Training checkpoints are written to the ignored `artifacts/` directory.
 
