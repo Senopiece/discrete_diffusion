@@ -6,8 +6,10 @@ readme = "README.md"
 requires-python = ">=3.11,<3.13"
 dependencies = [
     "anywidget>=0.9",
+    "imageio-ffmpeg>=0.6",
     "ipykernel>=6.29",
     "ipywidgets>=8.1",
+    "matplotlib>=3.9",
     "nbformat>=5.10",
     "numba>=0.60",
     "numpy>=2.0",

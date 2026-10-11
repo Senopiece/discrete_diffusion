@@ -13,6 +13,7 @@ The project installs CUDA 12.8-enabled PyTorch wheels for NVIDIA GPUs. Select th
 
 - `notebooks/01_maze_ddpmh.ipynb` - Gaussian DDPM with embedding-delta prediction
 - `notebooks/02_maze_fmh.ipynb` - continuous flow matching
+- `notebooks/02_02_maze_fmhh.ipynb` - random-interval flow matching with learned-temperature KL
 - `notebooks/03_maze_d3pm.ipynb` - categorical D3PM
 - `notebooks/04_maze_mdlm.ipynb` - MDLM-style absorbing masked diffusion
 - `notebooks/05_maze_discrete_flow_matching.ipynb` - categorical discrete flow matching with a uniform prior and learned endpoint posterior
