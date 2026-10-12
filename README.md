@@ -1,6 +1,6 @@
 # Discrete diffusion lab
 
-Small research project comparing Gaussian DDPM, continuous flow matching, categorical D3PM, masked diffusion (MDLM), and categorical discrete flow matching on synthetic binary 32x32 mazes. The notebooks and reusable code live under `notebooks/`.
+Small research project comparing Gaussian DDPM, continuous flow matching, categorical D3PM, masked diffusion (MDLM), and categorical discrete flow matching on synthetic binary square mazes. The flow-matching notebook trains on 32x32 by default and evaluates transfer to 64x64 grids. The notebooks and reusable code live under `notebooks/`.
 
 ## Setup
 
