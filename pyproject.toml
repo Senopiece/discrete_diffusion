@@ -17,6 +17,7 @@ dependencies = [
     "pyarrow>=19",
     "queens-generator",
     "scikit-learn>=1.6",
+    "scipy>=1.14",
     "torch>=2.5",
 ]
 
