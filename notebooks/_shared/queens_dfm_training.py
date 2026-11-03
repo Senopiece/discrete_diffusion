@@ -1,4 +1,4 @@
-"""A second, independent Queens DFM training run with isolated random state."""
+"""Queens DFM ablation using the coloring as its initial state only."""
 
 import hashlib
 import math
@@ -10,7 +10,7 @@ from torch.nn import functional as F
 from torch.utils.data import DataLoader, Dataset, RandomSampler
 
 from .queens_data import BOARD_SIZE, EMPTY
-from .queens_dfm_inference import QueensDFM
+from .queens_dfm_inference import QueensInitialOnlyDFM
 
 
 class _QueensViews(Dataset):
@@ -38,15 +38,15 @@ def _path(source, target, times, generator=None):
     return torch.where(switches < times[:, None, None], target, source)
 
 
-class IndependentQueensDFM:
-    """Same CE objective/augmentation as DFM #1; own weights, optimizer and RNG."""
+class InitialStateQueensDFMRun:
+    """Match the reference budget/split; train v(x_t,t) without a coloring input."""
 
     def __init__(self, puzzles, reference_path, checkpoint_path, *, device="cpu",
                  seed=None, batch_size=128, samples_per_epoch=4096, resume=True):
         self.puzzles = puzzles
         self.reference_path, self.checkpoint_path = Path(reference_path), Path(checkpoint_path)
         if self.reference_path.resolve() == self.checkpoint_path.resolve():
-            raise ValueError("The second run needs a separate checkpoint path.")
+            raise ValueError("The initial-state-only model needs a separate checkpoint path.")
         reference = torch.load(self.reference_path, map_location="cpu", weights_only=True)
         if reference.get("format_version") != "queens7_dfm_v1":
             raise ValueError("Expected a trained Queens DFM reference checkpoint.")
@@ -58,9 +58,7 @@ class IndependentQueensDFM:
         self.reference_epochs = int(reference["history"]["epochs_completed"])
         self.reference_history = reference["history"]
         self.reference_seed = int(reference["seed"])
-        self.seed = self.reference_seed + 1 if seed is None else int(seed)
-        if self.seed == self.reference_seed:
-            raise ValueError("Choose a different seed for the independent run.")
+        self.seed = self.reference_seed if seed is None else int(seed)
         self.device = torch.device(device)
         self.cuda_devices = list(range(torch.cuda.device_count())) if self.device.type == "cuda" else []
         self.batch_size, self.samples_per_epoch = int(batch_size), int(samples_per_epoch)
@@ -83,7 +81,7 @@ class IndependentQueensDFM:
             torch.set_rng_state(torch.Generator(device="cpu").manual_seed(self.seed).get_state())
             if self.cuda_devices:
                 torch.cuda.manual_seed_all(self.seed)
-            self.model = QueensDFM(**self.model_config).to(self.device)
+            self.model = QueensInitialOnlyDFM(**self.model_config).to(self.device)
             self.optimizer = torch.optim.AdamW(
                 self.model.parameters(), lr=self.learning_rate, weight_decay=self.weight_decay,
             )
@@ -105,14 +103,14 @@ class IndependentQueensDFM:
         self.checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
         temporary = self.checkpoint_path.with_suffix(".pt.tmp")
         torch.save(dict(
-            format_version="queens7_dfm_v1", model_state_dict=self.model.state_dict(),
+            format_version="queens7_dfm_initial_only_v1", model_state_dict=self.model.state_dict(),
             optimizer_state_dict=self.optimizer.state_dict(), model_config=self.model_config,
             history=self.history, global_step=self.global_step, flow_steps=self.flow_steps,
             seed=self.seed, split_seed=self.reference_seed,
             dataset_sha256=self.puzzles["metadata"]["data_sha256"],
             splits={name: torch.as_tensor(indices.copy()) for name, indices in self.splits.items()},
             torch_rng_state=self.cpu_rng, cuda_rng_state_all=self.cuda_rng,
-            training_config=self._training_config(), independent_run=True,
+            training_config=self._training_config(), conditioning_mode="initial_state_only",
             reference_checkpoint_sha256=self.reference_sha256,
             target_optimizer_steps=self.target_steps,
         ), temporary)
@@ -121,8 +119,8 @@ class IndependentQueensDFM:
     def load(self):
         saved = torch.load(self.checkpoint_path, map_location="cpu", weights_only=True)
         if (
-            saved.get("format_version") != "queens7_dfm_v1"
-            or not saved.get("independent_run")
+            saved.get("format_version") != "queens7_dfm_initial_only_v1"
+            or saved.get("conditioning_mode") != "initial_state_only"
             or saved.get("dataset_sha256") != self.puzzles["metadata"]["data_sha256"]
             or int(saved["seed"]) != self.seed
             or saved["model_config"] != self.model_config
@@ -130,7 +128,7 @@ class IndependentQueensDFM:
             or any(not np.array_equal(saved["splits"][name].cpu().numpy(), values)
                    for name, values in self.splits.items())
         ):
-            raise ValueError("Second checkpoint/settings differ; choose the matching settings or a new path.")
+            raise ValueError("Initial-state-only checkpoint/settings differ; use the matching settings or a new path.")
         self.model.load_state_dict(saved["model_state_dict"])
         self.optimizer.load_state_dict(saved["optimizer_state_dict"])
         self.history, self.global_step = saved["history"], int(saved["global_step"])
@@ -153,7 +151,7 @@ class IndependentQueensDFM:
                 for time in (0.0, 0.2, 0.4, 0.6, 0.8, 0.95):
                     times = torch.full((len(coloring),), time, device=self.device)
                     state = _path(coloring, target, times, generator)
-                    loss = F.cross_entropy(self.model(state, coloring, times), target).item()
+                    loss = F.cross_entropy(self.model(state, times), target).item()
                     total += loss * len(coloring)
                     count += len(coloring)
                     if time == 0.0:
@@ -194,7 +192,7 @@ class IndependentQueensDFM:
                         times = torch.rand(len(coloring), device=self.device)
                         state = _path(coloring, endpoint, times)
                         self.optimizer.zero_grad(set_to_none=True)
-                        loss = F.cross_entropy(self.model(state, coloring, times), endpoint)
+                        loss = F.cross_entropy(self.model(state, times), endpoint)
                         loss.backward()
                         torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
                         self.optimizer.step()

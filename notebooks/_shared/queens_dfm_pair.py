@@ -1,4 +1,4 @@
-"""Matched-checkpoint evaluation and paired retry statistics for two DFM runs."""
+"""Compare DFM with repeated coloring conditioning vs initial-state-only DFM."""
 
 from pathlib import Path
 
@@ -24,7 +24,7 @@ def _evaluate(candidate, info, puzzles, indices, *, steps, attempts, seed, batch
                 and saved["successes"].shape == (len(indices), attempts)
                 and int(saved["steps"]) == steps and int(saved["attempts"]) == attempts
                 and int(saved["seed"]) == seed and int(saved["batch_size"]) == batch_size
-                and str(saved["sampler_version"]) == "queens7_dfm_sampler_v1"
+                and str(saved["sampler_version"]) == info["sampler_version"]
             ):
                 if progress:
                     progress(label, len(indices) * attempts * steps, len(indices) * attempts * steps, "cached")
@@ -50,24 +50,112 @@ def _evaluate(candidate, info, puzzles, indices, *, steps, attempts, seed, batch
         path, dataset_indices=indices, successes=successes,
         checkpoint_sha256=info["checkpoint_sha256"], dataset_sha256=info["dataset_sha256"],
         steps=steps, attempts=attempts, seed=seed, batch_size=batch_size,
-        sampler_version="queens7_dfm_sampler_v1",
+        sampler_version=info["sampler_version"],
         training_epochs=info["epochs"], training_optimizer_steps=info["global_step"],
     )
     return successes, str(path)
 
 
 def _pass_at_k(successes):
-    n, attempts = successes.shape
-    values = np.zeros((n, attempts + 1))
-    failures = attempts - successes.sum(axis=1)
-    probability_none = np.ones(n)
+    return _pass_at_k_from_counts(successes.sum(axis=1), successes.shape[1])
+
+
+def _pass_at_k_from_counts(counts, attempts):
+    """Average success over every k-subset of the observed independent attempts."""
+    counts = np.asarray(counts, dtype=int)
+    if attempts < 1 or counts.ndim != 1 or np.any((counts < 0) | (counts > attempts)):
+        raise ValueError("Expected success counts between zero and the attempt count.")
+    values = np.zeros((len(counts), attempts + 1))
+    failures = attempts - counts
+    probability_none = np.ones(len(counts))
     for k in range(1, attempts + 1):
         probability_none *= np.maximum(failures - k + 1, 0) / (attempts - k + 1)
         values[:, k] = 1 - probability_none
     return values
 
 
-def compare_dfm_runs(puzzles, test_indices, first_checkpoint, second_checkpoint,
+def solvability_retry_scatter(comparison, puzzles):
+    """Paired per-puzzle pass@k scatter with a native Plotly attempt slider.
+
+    P(at least one success in k attempts) = 1-C(A-c,k)/C(A,k).
+    Uses recorded counts only; moving the slider never evaluates a network.
+    """
+    import plotly.graph_objects as go
+
+    if comparison["dataset_sha256"] != puzzles["metadata"]["data_sha256"]:
+        raise ValueError("The comparison belongs to another puzzle dataset.")
+    models = comparison["models"]
+    if len(models) != 2:
+        raise ValueError("Expected two compared models.")
+    attempts = int(comparison["attempts"])
+    indices = np.asarray(comparison["dataset_indices"], dtype=int)
+    curves = [_pass_at_k_from_counts(model["counts"], attempts) for model in models]
+    if any(len(curve) != len(indices) for curve in curves):
+        raise ValueError("Puzzle IDs and model success counts do not match.")
+    sources = puzzles["source_names"][indices]
+    groups = [(source, np.flatnonzero(sources == source)) for source in sorted(set(sources.tolist()))]
+    colors = {"Synthetic": "#5267DB", "Queens.game": "#D88437",
+              "AMAZE": "#2F9D88", "Queendom": "#9B6BD3"}
+
+    def axis_title(model, k):
+        return f"{model['label']} · solved within {k} attempts (%)"
+
+    def title(k):
+        return f"DFM conditioning · at least one solution in {k} attempts"
+
+    def source_trace(source, selected, k):
+        return go.Scatter(
+            x=100 * curves[0][selected, k], y=100 * curves[1][selected, k],
+            ids=[str(int(indices[i])) for i in selected], mode="markers", name=source,
+            marker=dict(size=9, opacity=.7, color=colors.get(source, "#64748B")),
+            customdata=[
+                [int(indices[i]), str(puzzles["source_ids"][indices[i]]),
+                 int(models[0]["counts"][i]), int(models[1]["counts"][i]), k, attempts]
+                for i in selected
+            ],
+            hovertemplate=(
+                "Puzzle #%{customdata[0]} · %{customdata[1]}"
+                "<br>At least once in %{customdata[4]} attempts"
+                f"<br>{models[0]['label']}: %{{x:.2f}}%"
+                f"<br>{models[1]['label']}: %{{y:.2f}}%"
+                "<br>Recorded single-attempt successes: "
+                "%{customdata[2]}/%{customdata[5]} vs %{customdata[3]}/%{customdata[5]}"
+                "<extra>%{fullData.name}</extra>"
+            ),
+        )
+
+    fig = go.Figure(go.Scatter(
+        x=[0, 100], y=[0, 100], mode="lines", name="Equal solvability",
+        line=dict(color="#A5ADBA", dash="dash", width=1.5), hoverinfo="skip"))
+    for source, selected in groups:
+        fig.add_trace(source_trace(source, selected, 1))
+    fig.frames = [go.Frame(
+        name=str(k), data=[source_trace(source, selected, k) for source, selected in groups],
+        traces=list(range(1, len(groups) + 1)),
+        layout=go.Layout(title=dict(text=title(k)),
+                         xaxis=dict(title=axis_title(models[0], k)),
+                         yaxis=dict(title=axis_title(models[1], k))))
+        for k in range(1, attempts + 1)]
+    fig.update_layout(
+        title=dict(text=title(1), x=0), template="plotly_white", autosize=True, height=700,
+        xaxis=dict(title=axis_title(models[0], 1), range=[-2, 102], constrain="domain"),
+        yaxis=dict(title=axis_title(models[1], 1), range=[-2, 102],
+                   scaleanchor="x", scaleratio=1, constrain="domain"),
+        sliders=[dict(
+            active=0, x=.025, len=.95, y=-.17, yanchor="top",
+            currentvalue=dict(prefix="Attempts: ", suffix=f" / {attempts}", font=dict(size=16)),
+            pad=dict(t=25, b=15), ticklen=5, font=dict(size=11),
+            steps=[dict(label=str(k), method="animate", args=[
+                [str(k)], dict(mode="immediate", frame=dict(duration=0, redraw=False),
+                               transition=dict(duration=0))]) for k in range(1, attempts + 1)]
+        )],
+        legend=dict(orientation="h", x=0, y=-.40),
+        margin=dict(l=85, r=25, t=80, b=185), font=dict(family="Arial, sans-serif", size=15),
+    )
+    return fig
+
+
+def compare_dfm_conditioning(puzzles, test_indices, first_checkpoint, second_checkpoint,
                      artifacts, *, device="cpu", n_puzzles=256, attempts=32, steps=100,
                      batch_size=128, seed=17, bootstrap_draws=3000, refresh=False,
                      progress=None):
@@ -78,6 +166,9 @@ def compare_dfm_runs(puzzles, test_indices, first_checkpoint, second_checkpoint,
         raise ValueError("Use a positive puzzle count, or None for all shared test puzzles.")
     first, first_info = load_queens_dfm(first_checkpoint, dataset_sha256=puzzles["metadata"]["data_sha256"], device=device)
     second, second_info = load_queens_dfm(second_checkpoint, dataset_sha256=puzzles["metadata"]["data_sha256"], device=device)
+    if (first_info["conditioning_mode"] != "coloring_each_step"
+            or second_info["conditioning_mode"] != "initial_state_only"):
+        raise ValueError("Compare the coloring-conditioned reference with the initial-state-only checkpoint.")
     if min(first_info["global_step"], second_info["global_step"]) < 1:
         raise ValueError("Train both models before evaluating them.")
     if first_info["checkpoint_sha256"] == second_info["checkpoint_sha256"]:
@@ -94,9 +185,9 @@ def compare_dfm_runs(puzzles, test_indices, first_checkpoint, second_checkpoint,
     artifacts = Path(artifacts)
     successful, origins = [], []
     for label, candidate, info, filename, fallbacks in [
-        ("DFM 1", first, first_info, "queens7_dfm_pair_first_evaluation.npz",
+        ("DFM + coloring", first, first_info, "queens7_dfm_conditioning_reference_evaluation.npz",
          [artifacts / "queens7_dfm_vs_d3pm_dfm_evaluation.npz"]),
-        ("DFM 2", second, second_info, "queens7_dfm_pair_second_evaluation.npz", []),
+        ("DFM initial only", second, second_info, "queens7_dfm_conditioning_initial_only_evaluation.npz", []),
     ]:
         outcomes, origin = _evaluate(
             candidate, info, puzzles, indices, steps=steps, attempts=attempts,
@@ -112,7 +203,7 @@ def compare_dfm_runs(puzzles, test_indices, first_checkpoint, second_checkpoint,
     )
     models = []
     boot_curves = []
-    for label, outcomes, info, origin in zip(["DFM 1", "DFM 2"], successful,
+    for label, outcomes, info, origin in zip(["DFM + coloring", "DFM initial only"], successful,
                                            [first_info, second_info], origins):
         per_puzzle = _pass_at_k(outcomes)
         boot = weights @ per_puzzle / n
@@ -122,6 +213,7 @@ def compare_dfm_runs(puzzles, test_indices, first_checkpoint, second_checkpoint,
         models.append(dict(
             label=label, seed=info["seed"], epochs=info["epochs"],
             optimizer_steps=info["global_step"], checkpoint_sha256=info["checkpoint_sha256"],
+            conditioning_mode=info["conditioning_mode"], parameters=info["parameters"],
             checkpoint_path=info["checkpoint_path"], evaluation_origin=origin,
             counts=outcomes.sum(axis=1).tolist(), probability=probability.tolist(),
             mean_probability=float(probability.mean()), pass_at_k=per_puzzle.mean(axis=0).tolist(),

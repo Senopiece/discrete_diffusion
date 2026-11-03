@@ -15,6 +15,8 @@ from .queens_data import BOARD_SIZE
 class QueensDFM(nn.Module):
     """The coloring-to-colored-queens model from the DFM notebook (v1)."""
 
+    conditioning_mode = "coloring_each_step"
+
     def __init__(self, board_size=7, base_channels=64, time_dim=128,
                  time_embedding_scale=100.0):
         super().__init__()
@@ -46,6 +48,44 @@ class QueensDFM(nn.Module):
         return logits.masked_fill(~allowed, -torch.inf)
 
 
+class QueensInitialOnlyDFM(nn.Module):
+    """DFM conditioned through its initial state only: forward(state, times).
+
+    Input: eight current-state channels + two coordinates. Both the network
+    features and the absorbing-path support mask depend only on the current
+    state, never on an archived original coloring.
+    """
+
+    conditioning_mode = "initial_state_only"
+
+    def __init__(self, board_size=7, base_channels=64, time_dim=128,
+                 time_embedding_scale=100.0):
+        super().__init__()
+        if board_size != BOARD_SIZE:
+            raise ValueError("This checkpoint family uses 7x7 Queens boards.")
+        self.board_size = int(board_size)
+        self.num_classes = self.board_size + 1
+        self.empty_token = self.board_size
+        self.time_embedding_scale = float(time_embedding_scale)
+        self.network = Denoiser(
+            embedding_dim=self.num_classes + 2, output_dim=self.num_classes,
+            base_channels=base_channels, time_dim=time_dim,
+        )
+        axis = torch.linspace(-1, 1, self.board_size)
+        rr, cc = torch.meshgrid(axis, axis, indexing="ij")
+        self.register_buffer("coordinates", torch.stack((rr, cc))[None])
+
+    def forward(self, state, times):
+        channels = F.one_hot(state.long(), self.num_classes).permute(0, 3, 1, 2).float()
+        inputs = torch.cat((channels, self.coordinates.expand(len(state), -1, -1, -1)), 1)
+        logits = self.network(inputs, times * self.time_embedding_scale)
+        # A colored cell can retain its CURRENT color or become EMPTY. An empty
+        # cell remains empty. No original-color lookup is used for erased cells.
+        allowed = F.one_hot(state.long(), self.num_classes).permute(0, 3, 1, 2).bool()
+        allowed[:, self.empty_token] = True
+        return logits.masked_fill(~allowed, -torch.inf)
+
+
 def load_queens_dfm(path, *, dataset_sha256, device="cpu"):
     """Load only inference weights; return provenance and the checkpoint test split."""
     path = Path(path)
@@ -54,13 +94,16 @@ def load_queens_dfm(path, *, dataset_sha256, device="cpu"):
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     checkpoint = torch.load(path, map_location="cpu", weights_only=True)
-    if checkpoint.get("format_version") != "queens7_dfm_v1":
-        raise ValueError("Expected a queens7_dfm_v1 checkpoint.")
+    formats = {"queens7_dfm_v1": QueensDFM,
+               "queens7_dfm_initial_only_v1": QueensInitialOnlyDFM}
+    model_class = formats.get(checkpoint.get("format_version"))
+    if model_class is None:
+        raise ValueError("Expected a supported Queens DFM checkpoint.")
     if checkpoint.get("dataset_sha256") != dataset_sha256:
         raise ValueError("DFM checkpoint and current dataset differ.")
     # Construct on CPU without changing the active D3PM training RNG state.
     with torch.random.fork_rng(devices=[]):
-        candidate = QueensDFM(**checkpoint["model_config"])
+        candidate = model_class(**checkpoint["model_config"])
     candidate.load_state_dict(checkpoint["model_state_dict"], strict=True)
     candidate.to(device).eval()
     info = dict(
@@ -69,13 +112,22 @@ def load_queens_dfm(path, *, dataset_sha256, device="cpu"):
         epochs=int(checkpoint["history"]["epochs_completed"]),
         global_step=int(checkpoint["global_step"]), seed=int(checkpoint["seed"]),
         test_indices=np.asarray(checkpoint["splits"]["test"].cpu(), dtype=np.int64).copy(),
+        conditioning_mode=candidate.conditioning_mode,
+        parameters=sum(p.numel() for p in candidate.parameters()),
+        sampler_version=("queens7_dfm_initial_only_sampler_v1"
+                         if candidate.conditioning_mode == "initial_state_only" else
+                         "queens7_dfm_sampler_v1"),
     )
     return candidate, info
 
 
 @torch.no_grad()
-def sample_queens_dfm(candidate, coloring, *, steps=100, seed=0, progress=None):
-    """Same irreversible categorical sampler as the DFM notebook; return tokens."""
+def sample_queens_dfm(candidate, coloring, *, steps=100, seed=0, progress=None,
+                      capture_steps=()):
+    """Initialize from coloring, then follow the model's declared conditioning.
+
+    Return tokens, or (tokens, snapshots) when capture_steps is nonempty.
+    """
     if not isinstance(steps, int) or steps < 1:
         raise ValueError("steps must be a positive integer.")
     device = next(candidate.parameters()).device
@@ -87,17 +139,25 @@ def sample_queens_dfm(candidate, coloring, *, steps=100, seed=0, progress=None):
     if bool(((coloring < 0) | (coloring >= candidate.board_size)).any()):
         raise ValueError("Unexpected region IDs.")
     state = coloring.clone()
+    capture_steps = set(map(int, capture_steps))
+    if any(step < 0 or step > steps for step in capture_steps):
+        raise ValueError("Capture steps must be between zero and steps.")
+    snapshots = {0: state.cpu().clone()} if 0 in capture_steps else {}
+    initial_only = candidate.conditioning_mode == "initial_state_only"
     generator = torch.Generator(device=device).manual_seed(int(seed))
     was_training = candidate.training
     candidate.eval()
     try:
         for step in range(steps):
             times = torch.full((len(state),), step / steps, device=device)
-            p_empty = candidate(state, coloring, times).softmax(dim=1)[:, candidate.empty_token]
+            logits = candidate(state, times) if initial_only else candidate(state, coloring, times)
+            p_empty = logits.softmax(dim=1)[:, candidate.empty_token]
             jump = torch.rand(state.shape, device=device, generator=generator) < p_empty / (steps - step)
             state = torch.where(jump & (state != candidate.empty_token), candidate.empty_token, state)
+            if step + 1 in capture_steps:
+                snapshots[step + 1] = state.cpu().clone()
             if progress:
                 progress(step + 1, steps)
     finally:
         candidate.train(was_training)
-    return state.cpu()
+    return (state.cpu(), snapshots) if capture_steps else state.cpu()

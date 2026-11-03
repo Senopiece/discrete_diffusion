@@ -7,29 +7,6 @@ from torch import nn
 from torch.nn import functional as F
 
 
-def make_binary_embeddings(embedding_dim: int, device: torch.device) -> torch.Tensor:
-    """Fixed, orthonormal unit vectors for the two maze pixel classes."""
-    if embedding_dim < 2:
-        raise ValueError("embedding_dim must be >= 2 for binary labels")
-    embeddings = torch.zeros(2, embedding_dim, device=device)
-    embeddings[0, 0] = 1.0
-    embeddings[1, 1] = 1.0
-    return embeddings
-
-
-def embed_binary(maze: torch.Tensor, embeddings: torch.Tensor) -> torch.Tensor:
-    """Map (B,H,W) labels to (B,D,H,W) continuous clean data."""
-    return embeddings[maze.long()].permute(0, 3, 1, 2).contiguous()
-
-
-def decode_probabilities(
-    x: torch.Tensor, embeddings: torch.Tensor, temperature: float = 0.1
-) -> torch.Tensor:
-    """Decode embedding dot products into two-class probabilities."""
-    logits = torch.einsum("bdhw,kd->bkhw", x, embeddings) / temperature
-    return logits.softmax(dim=1)
-
-
 def sinusoidal_timestep_embedding(timesteps: torch.Tensor, dim: int) -> torch.Tensor:
     """Sinusoidal embedding for integer or continuous scalar timesteps."""
     half = dim // 2
@@ -79,7 +56,7 @@ class Denoiser(nn.Module):
     ):
         super().__init__()
         if embedding_dim < 2:
-            raise ValueError("embedding_dim must be >= 2 for binary labels")
+            raise ValueError("embedding_dim must be >= 2 input channels")
         if output_dim is None:
             output_dim = embedding_dim
         if output_dim < 1:
