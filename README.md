@@ -40,8 +40,10 @@ The training plot updates in place. Checkpoints automatically save and resume
 weights, optimizer, history, dataset hash, splits and RNG state under
 `artifacts/queens8/`. Increase `EPOCHS` to extend the total budget.
 
-Sampling uses 100 stochastic steps with absorbing EMPTY cells, without search or
-repair. Evaluation runs 32 real attempts per selected test puzzle (256 by default)
-and plots empirical pass@k, averaged over subsets of the recorded attempts, with
-a 95% interval from bootstrapping whole puzzles. Results include the checkpoint
-and dataset hashes. Evaluation recomputes outcomes when its cell is run.
+Trajectory examples use 100 stochastic steps with absorbing EMPTY cells, without
+search or repair. Evaluation separately uses 1, 2, 4, 8, 16, 32 and 64 generation
+steps on the same selected test puzzles (256 by default), with 32 real attempts
+per puzzle for each step budget. One plot compares all seven empirical pass@k
+curves in different colors, averaged over subsets of the recorded attempts, with
+95% bands from bootstrapping whole puzzles. Results include the step budgets, checkpoint and
+dataset hashes. Evaluation recomputes outcomes when its cell is run.
