@@ -1,4 +1,4 @@
-"""Sampler comparison plots with independent temperature, budget and layer filters."""
+"""Sampler comparison plots with parameter and layer filters."""
 
 from pathlib import Path
 
@@ -25,7 +25,7 @@ class PlotControls(anywidget.AnyWidget):
 
 
 class SamplingComparison(widgets.GridBox):
-    """A chart with independent temperature, budget and layer selectors."""
+    """A chart with independent parameter and layer selectors."""
 
     def __init__(self, figure, groups, selected, trace_keys):
         self.controls = PlotControls(groups, selected)
@@ -35,6 +35,7 @@ class SamplingComparison(widgets.GridBox):
         self.controls.layout.max_height = f"{figure.layout.height}px"
         self.controls.layout.overflow = "hidden"
         self._trace_keys = trace_keys
+        self._selection_axes = tuple(group["id"] for group in groups)
         super().__init__(
             [self.chart, self.controls],
             layout=widgets.Layout(
@@ -57,10 +58,11 @@ class SamplingComparison(widgets.GridBox):
     def _selection_changed(self, change=None):
         selected = self.controls.selected
         with self.chart.batch_update():
-            for trace, (tau, budget, layer) in zip(self.chart.data, self._trace_keys, strict=True):
-                trace.visible = (tau in selected.get("tau", [])
-                                 and budget in selected.get("budget", [])
-                                 and layer in selected.get("layers", []))
+            for trace, key in zip(self.chart.data, self._trace_keys, strict=True):
+                trace.visible = all(
+                    value in selected.get(axis, [])
+                    for axis, value in zip(self._selection_axes, key, strict=True)
+                )
 
     def close(self):
         if getattr(self, "_selection_connected", False):
@@ -125,6 +127,50 @@ def confidence_retry_plot(statistics, taus, budgets, *, previous=None,
     view = SamplingComparison(
         figure, groups, dict(tau=tau_names, budget=budget_names, layers=["Solve probability"]), keys,
     )
+    if previous is not None:
+        previous.close()
+    return view
+
+
+def risk_retry_plot(statistics, budgets, *, previous=None):
+    """Compare risk budgets by color with optional whole-puzzle-bootstrap bands."""
+    names = [f"{budget:g}" for budget in budgets]
+    colors = ("#75A7FF", "#F4B66A", "#6DD3AC", "#CB9BFF", "#ED8596", "#56CDD8", "#D8CD7B")
+    figure = go.Figure()
+    keys = []
+    for index, budget in enumerate(budgets):
+        color = colors[index % len(colors)]
+        rgb = tuple(int(color[p:p + 2], 16) for p in (1, 3, 5))
+        for bound, fill in (("lower", False), ("upper", True)):
+            figure.add_scatter(
+                x=statistics["attempts"], y=100 * statistics[bound][index],
+                mode="lines", line=dict(width=0), fill="tonexty" if fill else None,
+                fillcolor=f"rgba({rgb[0]},{rgb[1]},{rgb[2]},0.08)",
+                hoverinfo="skip", showlegend=False,
+            )
+            keys.append((names[index], "95% interval"))
+        figure.add_scatter(
+            x=statistics["attempts"], y=100 * statistics["mean"][index],
+            name=f"δ = {budget:g}", mode="lines", line=dict(color=color, width=2.5),
+            hovertemplate="%{x} attempts · %{y:.2f}%<extra>%{fullData.name}</extra>",
+        )
+        keys.append((names[index], "Solve probability"))
+    figure.update_layout(
+        template="plotly_dark", paper_bgcolor="#1f1f1f", plot_bgcolor="#1f1f1f",
+        title=dict(text="At least one solution vs attempts", x=0.02),
+        font=dict(family="Arial, sans-serif", size=16), autosize=True, height=650,
+        margin=dict(l=80, r=25, t=60, b=75), showlegend=False, hovermode="closest",
+        xaxis=dict(title="Number of attempts", range=[0, int(statistics["attempts"][-1])],
+                   gridcolor="rgba(148,163,184,0.12)", zeroline=False),
+        yaxis=dict(title="At least one solution (%)", range=[0, 100],
+                   gridcolor="rgba(148,163,184,0.12)", zeroline=False),
+    )
+    groups = [
+        dict(id="budget", label="Risk budget δ", options=names, multiple=True,
+             samples=[dict(color=colors[i % len(colors)]) for i in range(len(budgets))]),
+        dict(id="layers", label="Layers", options=["Solve probability", "95% interval"], multiple=True),
+    ]
+    view = SamplingComparison(figure, groups, dict(budget=names, layers=["Solve probability"]), keys)
     if previous is not None:
         previous.close()
     return view

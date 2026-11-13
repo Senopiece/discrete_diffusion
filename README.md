@@ -83,3 +83,17 @@ temperatures and seven risk budgets, and plots the observed sampling cost.
 Per-attempt outcomes, model-call counts and forced-step counts are saved to
 `artifacts/queens8/queens8_dfm_adaptive_evaluation.npz`. The risk budget is a local
 estimate based on the model probabilities; forced steps can exceed it.
+
+## Adaptive sampling with multiplicative risk
+
+`notebooks/qeens/04_queens_product_risk_sampling.ipynb` orders cells without
+replacement using their endpoint EMPTY probabilities. It erases the longest
+prefix satisfying `1 - prod(p(EMPTY)) <= delta`, capped to leave eight cells.
+The product is evaluated in log space. It estimates local risk under a
+conditional-independence approximation.
+
+The notebook shows trajectories and compares seven risk budgets using the saved
+model and held-out split. Time follows completed deletions, and a zero-length
+prefix forces one deletion. Success across attempts, model-call counts and
+forced-step counts are saved to
+`artifacts/queens8/queens8_dfm_product_risk_evaluation.npz`.
