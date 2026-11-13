@@ -63,3 +63,19 @@ puzzles and 32 attempts per puzzle. The plot has independent temperature and
 step selectors: color identifies temperature, line style identifies steps,
 and optional bands show 95% puzzle-bootstrap intervals.
 Results are saved to `artifacts/queens8/queens8_dfm_confidence_evaluation.npz`.
+
+## Adaptive risk-budget sampling
+
+`notebooks/qeens/03_queens_adaptive_sampling.ipynb` loads the trained model and
+chooses the number of erasures at each iteration. Cells are ordered with weights
+`p(EMPTY)**(1/tau)`. The sampler erases the longest prefix whose cumulative
+`sum(1-p(EMPTY))` fits the risk budget, capped to leave at least eight cells.
+An empty prefix forces one deletion. Time follows the fraction of the 56
+required deletions already completed. Generation finishes with exactly eight
+cells in 1–56 model calls.
+
+The notebook shows trajectories, compares success across attempts for three
+temperatures and seven risk budgets, and plots the observed sampling cost.
+Per-attempt outcomes, model-call counts and forced-step counts are saved to
+`artifacts/queens8/queens8_dfm_adaptive_evaluation.npz`. The risk budget is a local
+estimate based on the model probabilities; forced steps can exceed it.

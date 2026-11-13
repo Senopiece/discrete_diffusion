@@ -1,4 +1,4 @@
-"""Sampler comparison plots with independent temperature, step and layer filters."""
+"""Sampler comparison plots with independent temperature, budget and layer filters."""
 
 from pathlib import Path
 
@@ -25,7 +25,7 @@ class PlotControls(anywidget.AnyWidget):
 
 
 class SamplingComparison(widgets.GridBox):
-    """A chart with independent temperature, step and layer selectors."""
+    """A chart with independent temperature, budget and layer selectors."""
 
     def __init__(self, figure, groups, selected, trace_keys):
         self.controls = PlotControls(groups, selected)
@@ -57,9 +57,9 @@ class SamplingComparison(widgets.GridBox):
     def _selection_changed(self, change=None):
         selected = self.controls.selected
         with self.chart.batch_update():
-            for trace, (tau, steps, layer) in zip(self.chart.data, self._trace_keys, strict=True):
+            for trace, (tau, budget, layer) in zip(self.chart.data, self._trace_keys, strict=True):
                 trace.visible = (tau in selected.get("tau", [])
-                                 and steps in selected.get("steps", [])
+                                 and budget in selected.get("budget", [])
                                  and layer in selected.get("layers", []))
 
     def close(self):
@@ -72,10 +72,11 @@ class SamplingComparison(widgets.GridBox):
         super().close()
 
 
-def confidence_retry_plot(statistics, taus, step_counts, *, previous=None):
-    """Color encodes tau; dash encodes step count. Controls filter their product."""
+def confidence_retry_plot(statistics, taus, budgets, *, previous=None,
+                          budget_label="Generation steps", budget_name="steps"):
+    """Color encodes tau; dash encodes the budget. Controls filter their product."""
     tau_names = [f"{tau:g}" for tau in taus]
-    step_names = [str(steps) for steps in step_counts]
+    budget_names = [f"{budget:g}" for budget in budgets]
     colors = ("#75A7FF", "#F4B66A", "#6DD3AC")
     dashes = ("solid", "dot", "dash", "longdash", "dashdot", "longdashdot",
               "12px,3px,2px,3px,2px,3px")
@@ -85,7 +86,7 @@ def confidence_retry_plot(statistics, taus, step_counts, *, previous=None):
     for i, tau in enumerate(taus):
         color = colors[i % len(colors)]
         rgb = tuple(int(color[p:p + 2], 16) for p in (1, 3, 5))
-        for j, steps in enumerate(step_counts):
+        for j, budget in enumerate(budgets):
             for bound, fill in (("lower", False), ("upper", True)):
                 figure.add_scatter(
                     x=statistics["attempts"], y=100 * statistics[bound][i, j],
@@ -94,14 +95,14 @@ def confidence_retry_plot(statistics, taus, step_counts, *, previous=None):
                     fillcolor=f"rgba({rgb[0]},{rgb[1]},{rgb[2]},0.07)",
                     hoverinfo="skip", showlegend=False,
                 )
-                keys.append((tau_names[i], step_names[j], "95% interval"))
+                keys.append((tau_names[i], budget_names[j], "95% interval"))
             figure.add_scatter(
                 x=statistics["attempts"], y=100 * statistics["mean"][i, j],
-                name=f"τ = {tau:g} · {steps} steps", mode="lines",
+                name=f"τ = {tau:g} · {budget_name} = {budget:g}", mode="lines",
                 line=dict(color=color, width=2.5, dash=dashes[j % len(dashes)]),
                 hovertemplate="%{x} attempts · %{y:.2f}%<extra>%{fullData.name}</extra>",
             )
-            keys.append((tau_names[i], step_names[j], "Solve probability"))
+            keys.append((tau_names[i], budget_names[j], "Solve probability"))
     figure.update_layout(
         template="plotly_dark", paper_bgcolor="#1f1f1f", plot_bgcolor="#1f1f1f",
         title=dict(text="At least one solution vs attempts", x=0.02),
@@ -116,13 +117,13 @@ def confidence_retry_plot(statistics, taus, step_counts, *, previous=None):
     groups = [
         dict(id="tau", label="Temperature τ", options=tau_names, multiple=True,
              samples=[dict(color=colors[i % len(colors)]) for i in range(len(taus))]),
-        dict(id="steps", label="Generation steps", options=step_names, multiple=True,
+        dict(id="budget", label=budget_label, options=budget_names, multiple=True,
              samples=[dict(color="#cccccc", dash=svg_dashes[i % len(svg_dashes)])
-                      for i in range(len(step_counts))]),
+                      for i in range(len(budgets))]),
         dict(id="layers", label="Layers", options=["Solve probability", "95% interval"], multiple=True),
     ]
     view = SamplingComparison(
-        figure, groups, dict(tau=tau_names, steps=step_names, layers=["Solve probability"]), keys,
+        figure, groups, dict(tau=tau_names, budget=budget_names, layers=["Solve probability"]), keys,
     )
     if previous is not None:
         previous.close()

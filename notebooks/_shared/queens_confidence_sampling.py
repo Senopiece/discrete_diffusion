@@ -105,10 +105,10 @@ def sample_confidence_dfm(model, coloring, *, steps=16, tau=1.0, seed=0,
 
 
 def retry_statistics(successes, *, bootstrap_samples=3000, seed=0):
-    """Whole-puzzle-bootstrap pass@k for outcomes shaped (tau, steps, puzzle, attempt)."""
+    """Whole-puzzle-bootstrap pass@k for (temperature, budget, puzzle, attempt) outcomes."""
     successes = np.asarray(successes, dtype=bool)
     if successes.ndim != 4 or min(successes.shape) < 1 or bootstrap_samples < 1:
-        raise ValueError("Expected nonempty (tau, steps, puzzle, attempt) outcomes.")
+        raise ValueError("Expected nonempty (temperature, budget, puzzle, attempt) outcomes.")
     n_puzzles, attempts = successes.shape[-2:]
     per_puzzle = np.zeros((*successes.shape[:-1], attempts + 1), dtype=float)
     failed = attempts - successes.sum(axis=-1)
@@ -121,9 +121,9 @@ def retry_statistics(successes, *, bootstrap_samples=3000, seed=0):
     weights = rng.multinomial(n_puzzles, np.full(n_puzzles, 1 / n_puzzles), size=bootstrap_samples)
     lower, upper = np.empty_like(mean), np.empty_like(mean)
     for tau_index in range(len(successes)):
-        for step_index in range(successes.shape[1]):
-            draws = weights @ per_puzzle[tau_index, step_index] / n_puzzles
-            lower[tau_index, step_index], upper[tau_index, step_index] = np.quantile(
+        for budget_index in range(successes.shape[1]):
+            draws = weights @ per_puzzle[tau_index, budget_index] / n_puzzles
+            lower[tau_index, budget_index], upper[tau_index, budget_index] = np.quantile(
                 draws, [0.025, 0.975], axis=0,
             )
     return dict(attempts=np.arange(attempts + 1), mean=mean, lower=lower, upper=upper)
