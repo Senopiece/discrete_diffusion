@@ -9,7 +9,7 @@ from torch.nn import functional as F
 from torch.utils.data import DataLoader, Dataset, RandomSampler
 
 from .queens_data import BOARD_SIZE, EMPTY, split_puzzles
-from .queens_dfm_inference import QueensDFM
+from .queens_dfm_inference import CHECKPOINT_FORMAT, QueensDFM
 
 
 class _QueensViews(Dataset):
@@ -37,6 +37,13 @@ def _path(source, target, times, generator=None):
     return torch.where(switches < times[:, None, None], target, source)
 
 
+def erasure_bce_loss(logits, state, endpoint):
+    """Mean grid BCE for endpoint erasure; absorbing EMPTY cells contribute zero."""
+    targets = (endpoint == EMPTY).to(dtype=logits.dtype)
+    losses = F.binary_cross_entropy_with_logits(logits.squeeze(1), targets, reduction="none")
+    return (losses * (state != EMPTY)).mean()
+
+
 class QueensDFMRun:
     """One model, one synthetic dataset, and an explicit optimizer-update budget."""
 
@@ -58,7 +65,7 @@ class QueensDFMRun:
         self.flow_steps = int(flow_steps)
         self.splits = split_puzzles(puzzles["fingerprints"], seed=self.seed)
         self.learning_rate, self.weight_decay = float(learning_rate), float(weight_decay)
-        self.history = dict(step=[], train_ce=[], validation_step=[], validation_ce=[],
+        self.history = dict(step=[], train_bce=[], validation_step=[], validation_bce=[],
                             epochs_completed=0)
         self.global_step = 0
         self.resumed = False
@@ -82,13 +89,13 @@ class QueensDFMRun:
     def _training_config(self):
         return dict(batch_size=self.batch_size, samples_per_epoch=self.samples_per_epoch,
                     learning_rate=self.learning_rate, weight_decay=self.weight_decay,
-                    validation_seed=self.seed + 401)
+                    validation_seed=self.seed + 401, loss="erasure_bce_colored_grid_mean")
 
     def save(self):
         self.checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
         temporary = self.checkpoint_path.with_suffix(".pt.tmp")
         torch.save(dict(
-            format_version="queens8_dfm_v1", model_state_dict=self.model.state_dict(),
+            format_version=CHECKPOINT_FORMAT, model_state_dict=self.model.state_dict(),
             optimizer_state_dict=self.optimizer.state_dict(), model_config=self.model_config,
             history=self.history, global_step=self.global_step, flow_steps=self.flow_steps,
             seed=self.seed,
@@ -103,7 +110,7 @@ class QueensDFMRun:
     def load(self):
         saved = torch.load(self.checkpoint_path, map_location="cpu", weights_only=True)
         if (
-            saved.get("format_version") != "queens8_dfm_v1"
+            saved.get("format_version") != CHECKPOINT_FORMAT
             or saved.get("conditioning_mode") != "initial_state_only"
             or saved.get("dataset_sha256") != self.puzzles["metadata"]["data_sha256"]
             or int(saved["seed"]) != self.seed
@@ -136,7 +143,7 @@ class QueensDFMRun:
                 for time in (0.0, 0.2, 0.4, 0.6, 0.8, 0.95):
                     times = torch.full((len(coloring),), time, device=self.device)
                     state = _path(coloring, target, times, generator)
-                    loss = F.cross_entropy(self.model(state, times), target).item()
+                    loss = erasure_bce_loss(self.model(state, times), state, target).item()
                     total += loss * len(coloring)
                     count += len(coloring)
             return total / count
@@ -148,6 +155,7 @@ class QueensDFMRun:
         target = self.target_steps if target_steps is None else int(target_steps)
         if target < 1 or checkpoint_every_epochs < 0:
             raise ValueError("Use positive target steps and nonnegative save interval.")
+        self.target_steps = target
         training = _QueensViews(self.puzzles, self.splits["train"], True)
         validation = _QueensViews(self.puzzles, self.splits["validation"], False)
         train_loader = DataLoader(
@@ -174,19 +182,19 @@ class QueensDFMRun:
                         times = torch.rand(len(coloring), device=self.device)
                         state = _path(coloring, endpoint, times)
                         self.optimizer.zero_grad(set_to_none=True)
-                        loss = F.cross_entropy(self.model(state, times), endpoint)
+                        loss = erasure_bce_loss(self.model(state, times), state, endpoint)
                         loss.backward()
                         torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
                         self.optimizer.step()
                         self.global_step += 1
                         self.history["step"].append(self.global_step)
-                        self.history["train_ce"].append(float(loss.item()))
+                        self.history["train_bce"].append(float(loss.item()))
                         if progress:
                             progress(self, "step", target)
                         if self.global_step % self.steps_per_epoch == 0:
-                            val_ce = self._validate(validation_loader)
+                            val_bce = self._validate(validation_loader)
                             self.history["validation_step"].append(self.global_step)
-                            self.history["validation_ce"].append(val_ce)
+                            self.history["validation_bce"].append(val_bce)
                             self.history["epochs_completed"] = self.global_step // self.steps_per_epoch
                             if progress:
                                 progress(self, "validation", target)

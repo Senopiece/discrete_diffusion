@@ -3,6 +3,7 @@
 import math
 
 import torch
+from torch.nn import functional as F
 
 
 @torch.no_grad()
@@ -57,14 +58,15 @@ def sample_adaptive_dfm(model, coloring, *, risk_budget=0.05, tau=1.0,
                 break
             current = state[active]
             times = (cells - remaining[active]).float() / total_erasures
-            log_p_empty = model(current, times).log_softmax(dim=1)[:, model.empty_token].flatten(1)
+            logits = model(current, times)[:, 0].flatten(1)
+            log_p_empty = F.logsigmoid(logits)
             uniforms = torch.rand(log_p_empty.shape, device=device, generator=generator)
             limits = torch.finfo(uniforms.dtype)
             uniforms.clamp_(min=limits.tiny, max=1 - limits.eps)
             scores = log_p_empty / tau - torch.log(-torch.log(uniforms))
             scores.masked_fill_(current.flatten(1) == model.empty_token, -torch.inf)
             order = scores.argsort(dim=1, descending=True)
-            risks = (1 - log_p_empty.exp()).gather(1, order)
+            risks = torch.sigmoid(-logits).gather(1, order)
             cumulative_risk = risks.cumsum(dim=1)
             capacity = remaining[active] - size
             eligible = (cumulative_risk <= risk_budget) & (ranks < capacity[:, None])

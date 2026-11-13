@@ -1,4 +1,4 @@
-"""Queens DFM with the coloring as its initial state only."""
+"""Queens DFM endpoint erasure logits from the current grid and scalar time."""
 
 import torch
 from torch import nn
@@ -8,11 +8,14 @@ from .model import Denoiser
 from .queens_data import BOARD_SIZE
 
 
-class QueensDFM(nn.Module):
-    """Predict endpoint logits from the current grid and scalar time.
+CHECKPOINT_FORMAT = "queens8_erasure_dfm_v1"
 
-    Inputs are nine state channels and two coordinates. Each colored cell
-    supports its current color and EMPTY; EMPTY cells are absorbing.
+
+class QueensDFM(nn.Module):
+    """Predict one endpoint EMPTY logit per cell, shaped (B,1,N,N).
+
+    Inputs are nine one-hot state channels, two coordinate channels and time.
+    Sigmoid converts each output logit to an endpoint erasure probability.
     """
 
     conditioning_mode = "initial_state_only"
@@ -23,11 +26,11 @@ class QueensDFM(nn.Module):
         if board_size != BOARD_SIZE:
             raise ValueError("This checkpoint family uses 8x8 Queens boards.")
         self.board_size = int(board_size)
-        self.num_classes = self.board_size + 1
+        self.num_states = self.board_size + 1
         self.empty_token = self.board_size
         self.time_embedding_scale = float(time_embedding_scale)
         self.network = Denoiser(
-            embedding_dim=self.num_classes + 2, output_dim=self.num_classes,
+            embedding_dim=self.num_states + 2, output_dim=1,
             base_channels=base_channels, time_dim=time_dim,
         )
         axis = torch.linspace(-1, 1, self.board_size)
@@ -35,13 +38,9 @@ class QueensDFM(nn.Module):
         self.register_buffer("coordinates", torch.stack((rr, cc))[None])
 
     def forward(self, state, times):
-        channels = F.one_hot(state.long(), self.num_classes).permute(0, 3, 1, 2).float()
+        channels = F.one_hot(state.long(), self.num_states).permute(0, 3, 1, 2).float()
         inputs = torch.cat((channels, self.coordinates.expand(len(state), -1, -1, -1)), 1)
-        logits = self.network(inputs, times * self.time_embedding_scale)
-        # Each cell supports its current color and EMPTY; EMPTY is absorbing.
-        allowed = F.one_hot(state.long(), self.num_classes).permute(0, 3, 1, 2).bool()
-        allowed[:, self.empty_token] = True
-        return logits.masked_fill(~allowed, -torch.inf)
+        return self.network(inputs, times * self.time_embedding_scale)
 
 
 @torch.no_grad()
@@ -73,7 +72,7 @@ def sample_queens_dfm(candidate, coloring, *, steps=100, seed=0, progress=None,
         for step in range(steps):
             times = torch.full((len(state),), step / steps, device=device)
             logits = candidate(state, times)
-            p_empty = logits.softmax(dim=1)[:, candidate.empty_token]
+            p_empty = logits[:, 0].sigmoid()
             jump = torch.rand(state.shape, device=device, generator=generator) < p_empty / (steps - step)
             state = torch.where(jump & (state != candidate.empty_token), candidate.empty_token, state)
             if step + 1 in capture_steps:

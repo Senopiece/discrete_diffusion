@@ -6,8 +6,9 @@ from pathlib import Path
 
 import numpy as np
 import torch
+from torch.nn import functional as F
 
-from .queens_dfm_inference import QueensDFM
+from .queens_dfm_inference import CHECKPOINT_FORMAT, QueensDFM
 
 
 def load_trained_dfm(path, puzzles, *, device="cpu"):
@@ -18,9 +19,9 @@ def load_trained_dfm(path, puzzles, *, device="cpu"):
     with path.open("rb") as stream:
         checkpoint_sha256 = hashlib.file_digest(stream, "sha256").hexdigest()
     saved = torch.load(path, map_location="cpu", weights_only=True)
-    if (saved.get("format_version") != "queens8_dfm_v1"
+    if (saved.get("format_version") != CHECKPOINT_FORMAT
             or saved.get("conditioning_mode") != "initial_state_only"):
-        raise ValueError("Expected an initial-state-only Queens 8x8 DFM checkpoint.")
+        raise ValueError("Expected a Queens 8x8 DFM checkpoint with one erasure logit per cell.")
     if saved.get("dataset_sha256") != puzzles["metadata"]["data_sha256"]:
         raise ValueError("Checkpoint and dataset differ. Use the dataset from training.")
     if int(saved.get("global_step", 0)) < 1:
@@ -81,7 +82,7 @@ def sample_confidence_dfm(model, coloring, *, steps=16, tau=1.0, seed=0,
     try:
         for step in range(steps):
             times = torch.full((len(state),), step / steps, device=device)
-            log_p_empty = model(state, times).log_softmax(dim=1)[:, model.empty_token]
+            log_p_empty = F.logsigmoid(model(state, times)[:, 0])
             cumulative = (2 * total_erasures * (step + 1) + steps) // (2 * steps)
             quota = cumulative - erased
             if quota:

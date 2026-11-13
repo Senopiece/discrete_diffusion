@@ -32,14 +32,18 @@ using rotations, reflections and color permutations.
 ## Training and evaluation
 
 The endpoint model is a U-Net with 9 current-state channels and 2 fixed coordinate
-channels, conditioned on scalar time. Train using mean pixel cross-entropy along
-the categorical coloring-to-solution path. The U-Net uses base width 64 and time
+channels, conditioned on scalar time. Its output is one erasure logit per cell,
+shaped `(B,1,8,8)`. Sigmoid gives the probability of EMPTY in the endpoint.
+Training uses binary cross-entropy from logits: target 1 for endpoint EMPTY
+and 0 for a queen. Already-empty cells contribute zero, with averaging over
+the full grid and batch. The U-Net uses base width 64 and time
 width 128. Training batch size, augmented views per epoch and total epoch budget
 are configured in the notebook.
 
 The training plot updates in place. Checkpoints automatically save and resume
-weights, optimizer, history, dataset hash, splits and RNG state under
-`artifacts/queens8/`. Increase `EPOCHS` to extend the total budget.
+weights, optimizer, history, dataset hash, splits and RNG state to
+`artifacts/queens8/queens8_dfm.pt`. With `RESUME = True`, increasing `EPOCHS`
+continues from the saved optimizer step and history up to the new total budget.
 
 Trajectory examples use 100 stochastic steps with absorbing EMPTY cells.
 Evaluation uses 1, 2, 4, 8, 16, 32 and 64 generation
