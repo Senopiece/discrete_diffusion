@@ -1,4 +1,4 @@
-"""A small timestep-conditioned U-Net for image denoising experiments."""
+"""A timestep-conditioned U-Net for grid endpoint prediction."""
 
 import math
 
@@ -45,7 +45,7 @@ class ResBlock(nn.Module):
 
 
 class Denoiser(nn.Module):
-    """Predict per-pixel image targets from an input image and timestep."""
+    """Predict per-cell targets from an input grid and timestep."""
 
     def __init__(
         self,

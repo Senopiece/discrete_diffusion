@@ -1,6 +1,6 @@
 """Prepare synthetic, uniquely solvable 8x8 Queens pairs OFFLINE.
 
-The notebook only loads the finished dataset. No external sources are used.
+Generate connected regions and verify uniqueness by exhaustive enumeration.
 """
 
 import argparse

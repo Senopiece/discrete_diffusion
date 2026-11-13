@@ -9,11 +9,10 @@ from .queens_data import BOARD_SIZE
 
 
 class QueensDFM(nn.Module):
-    """DFM conditioned through its initial state only: forward(state, times).
+    """Predict endpoint logits from the current grid and scalar time.
 
-    Input: nine current-state channels + two coordinates. Both the network
-    features and the absorbing-path support mask depend only on the current
-    state, never on an archived original coloring.
+    Inputs are nine state channels and two coordinates. Each colored cell
+    supports its current color and EMPTY; EMPTY cells are absorbing.
     """
 
     conditioning_mode = "initial_state_only"
@@ -39,8 +38,7 @@ class QueensDFM(nn.Module):
         channels = F.one_hot(state.long(), self.num_classes).permute(0, 3, 1, 2).float()
         inputs = torch.cat((channels, self.coordinates.expand(len(state), -1, -1, -1)), 1)
         logits = self.network(inputs, times * self.time_embedding_scale)
-        # A colored cell can retain its CURRENT color or become EMPTY. An empty
-        # cell remains empty. No original-color lookup is used for erased cells.
+        # Each cell supports its current color and EMPTY; EMPTY is absorbing.
         allowed = F.one_hot(state.long(), self.num_classes).permute(0, 3, 1, 2).bool()
         allowed[:, self.empty_token] = True
         return logits.masked_fill(~allowed, -torch.inf)
@@ -49,7 +47,7 @@ class QueensDFM(nn.Module):
 @torch.no_grad()
 def sample_queens_dfm(candidate, coloring, *, steps=100, seed=0, progress=None,
                       capture_steps=()):
-    """Initialize from coloring, then follow the model's declared conditioning.
+    """Sample the categorical flow from a complete region coloring.
 
     Return tokens, or (tokens, snapshots) when capture_steps is nonempty.
     """

@@ -1,0 +1,73 @@
+.queens-comparison, .queens-plot-controls {
+  box-sizing: border-box;
+  background: #1f1f1f;
+  color: #ccc;
+  min-width: 0;
+  max-width: 100%;
+  margin: 0 !important;
+  border: 0 !important;
+  box-shadow: none !important;
+}
+:where(.output, .output_container, .output_subarea, .widget-subarea,
+       .jp-OutputArea-output, .jupyter-widgets, .cell-output-ipywidget-background,
+       div:has(> .queens-comparison), div:has(> .queens-plot-controls)):has(.queens-comparison, .queens-plot-controls) {
+  --jp-layout-color0: #1f1f1f;
+  --jp-layout-color1: #1f1f1f;
+  background: #1f1f1f !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+}
+.queens-comparison > * { min-width: 0; max-width: 100%; background: #1f1f1f; }
+/* Legend entries are plain labels and line samples, like Plotly's legend. */
+.queens-plot-controls {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  row-gap: 20px;
+  padding: 55px 16px 20px 8px;
+  font: 15px/1.4 Arial, sans-serif;
+}
+.queens-plot-controls section {
+  display: flex;
+  flex-direction: column;
+  flex: 0 1 auto;
+  min-width: 0;
+  min-height: 32px;
+  overflow: hidden;
+}
+.queens-plot-heading { display: flex; flex: 0 0 auto; align-items: center; gap: 10px; margin-bottom: 5px; }
+.queens-plot-heading strong { font-size: 15px; font-weight: 400; margin-right: 4px; }
+.queens-plot-choices {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: #555 #1f1f1f;
+}
+.queens-plot-controls button {
+  appearance: none;
+  font: inherit;
+  color: inherit;
+  background: transparent;
+  border: 0;
+  border-radius: 2px;
+  box-shadow: none;
+  padding: 3px 2px;
+  margin: 0;
+  cursor: pointer;
+  text-align: left;
+}
+.queens-plot-controls .queens-legend-item { display: inline-flex; flex-shrink: 0; align-items: center; gap: 7px; min-width: 0; }
+.queens-legend-item svg { display: block; width: 42px; height: 16px; flex: 0 0 42px; }
+.queens-legend-item span { overflow-wrap: anywhere; }
+.queens-plot-heading button { font-size: 11px; color: #999; padding: 3px 9px; }
+.queens-plot-controls button:hover { background: rgb(255 255 255 / 6%); }
+.queens-plot-controls button[aria-pressed="false"] { opacity: 0.35; }
+.queens-plot-controls button[aria-pressed="true"] { opacity: 1; }
+.queens-plot-controls button:focus { outline: none; }
+.queens-plot-controls button:focus-visible { outline: 2px solid #75beff; outline-offset: 2px; }

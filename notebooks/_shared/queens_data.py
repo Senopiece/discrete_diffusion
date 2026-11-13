@@ -1,7 +1,4 @@
-"""Load prepared synthetic Queens pairs and check proposed solutions.
-
-There is deliberately no puzzle generator, solver, or uniqueness search here.
-"""
+"""Load prepared synthetic Queens pairs and check proposed solutions."""
 
 import hashlib
 import json
@@ -38,7 +35,7 @@ def puzzle_fingerprint(regions):
 
 
 def load_queens_dataset(directory):
-    """Read the stored 8x8 pairs; never generate or solve puzzles here."""
+    """Read stored 8x8 pairs and validate their integrity and answers."""
     directory = Path(directory)
     metadata = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
     if metadata.get("board_size") != BOARD_SIZE:
@@ -96,7 +93,7 @@ def split_puzzles(fingerprints, seed=17, validation_fraction=0.15, test_fraction
 
 
 def solution_checks(regions, tokens, empty=EMPTY):
-    """Check a supplied output in O(N^2); no search, uniqueness check, or repair.
+    """Check the Queens rules for supplied tokens in O(N^2).
 
     Matching batch dimensions can precede (N,N). Every nonempty cell is a
     predicted queen and must retain its original region color.
