@@ -1,51 +1,47 @@
-# Queens discrete generation
+# Queens 8x8 · Discrete Flow Matching
 
-Compare discrete flow matching (DFM) and binary categorical diffusion (D3PM) on 7x7 colored-region Queens puzzles.
+One model transforms a full region coloring into queen colors and EMPTY cells.
+The coloring enters through the initial state only; later steps receive the
+current grid and time, with no separate coloring condition.
 
-## Setup
+## Run
 
 ```powershell
 uv sync
+uv run python scripts/generate_queens8.py --count 5000
 ```
 
-Select the project `.venv` Python kernel in your notebook editor and open:
+Generate the dataset once, then open
+`notebooks/qeens/01_queens_discrete_flow_matching.ipynb` with the project `.venv`
+kernel. The notebook only loads the prepared pairs and contains training, solution
+trajectories, and probability of at least one solution versus number of attempts.
 
-- `notebooks/qeens/01_queens_discrete_flow_matching.ipynb` - coloring-to-solution DFM, including an initial-state-only conditioning ablation.
-- `notebooks/qeens/02_queens_d3pm.ipynb` - binary D3PM conditioned on the original coloring, including comparison with a trained DFM checkpoint.
+## Data
 
-PyTorch uses the configured CUDA 12.8 wheel index. Notebook setup finds the project root from the current directory or its ancestors. Shared code lives in `notebooks/_shared/`; checkpoints and evaluation caches are saved under the ignored root `artifacts/queens7/` directory.
+`data/queens8/` contains 5,000 synthetic puzzle/solution pairs. Each puzzle has
+eight connected regions of 3–14 cells and exactly one solution. The offline
+generator plants a legal placement, grows regions, refines their boundaries while
+preserving connectivity, and checks uniqueness against every row/column
+permutation without touching queens. Rotations, reflections and color relabelings
+are deduplicated before the train/validation/test split.
 
-## Dataset and rules
+Rules: one queen per row, column and region; queens cannot touch diagonally.
+Longer diagonals are allowed. Training augments puzzles and solutions together
+using rotations, reflections and color permutations.
 
-The prepared dataset in `data/queens7/` contains 785 external puzzle/solution pairs and 5,000 synthetic pairs prepared offline. Each puzzle needs exactly one queen in every row, column, and region. Queens may not touch diagonally; longer diagonals are allowed.
+## Training and evaluation
 
-The notebooks load stored pairs without generating puzzles or searching for solutions. Splitting precedes augmentation and groups duplicate colorings up to rotations, reflections, and color relabeling. Training applies paired rotations/reflections and color permutations; validation and test remain unchanged.
+The endpoint model is a U-Net with 9 current-state channels and 2 fixed coordinate
+channels, conditioned on scalar time. Train using mean pixel cross-entropy along
+the categorical coloring-to-solution path. Defaults: base width 64, time width
+128, batch size 128, 4,096 augmented views per epoch and 440 total epochs.
 
-The dataset loading and collection code retains source provenance. To rebuild the collection outside the notebooks:
+The training plot updates in place. Checkpoints automatically save and resume
+weights, optimizer, history, dataset hash, splits and RNG state under
+`artifacts/queens8/`. Increase `EPOCHS` to extend the total budget.
 
-```powershell
-uv run python scripts/collect_queens7.py
-uv run python scripts/generate_queens7.py --count 5000
-```
-
-See `data/queens7/README.md` for source details and offline uniqueness verification.
-
-## Models and training
-
-DFM starts from the full coloring and generates the original color at queen cells and EMPTY elsewhere. Its U-Net receives the eight-state grid, the seven-channel original coloring, two coordinate channels, and time. Training uses endpoint cross-entropy; sampling follows the categorical flow without constraint repair. The initial-state-only variant instead receives just the eight-state grid, two coordinates, and time (10 input channels). It starts from the complete coloring and never receives the original map again. Its output support is derived solely from the current state, including absorbing EMPTY cells.
-
-D3PM generates a binary queen occupancy map from independent fair-bit noise. The original coloring conditions every reverse step. Its U-Net uses two state channels, seven coloring channels, two coordinate channels, and time. Training combines the reverse variational objective with auxiliary clean-mask cross-entropy. Sampling uses the corresponding categorical reverse posterior without repairing the result.
-
-Both models use the shared U-Net with base width 64 and time-embedding width 128. The notebook defaults use batch size 128 and 4,096 augmented examples per epoch: 440 epochs for DFM and 750 for D3PM. Checkpoints record actual optimizer updates, training history, dataset fingerprint, split, optimizer state, and RNG state. Sampling uses 100 steps. Matching sampling budgets does not imply equal training budgets.
-
-## Evaluation and comparisons
-
-The notebooks include dataset examples, coloring multiplicity statistics, forward paths, updating training plots, checkpoint save/load cells, and stochastic solution trajectories.
-
-Evaluation uses the same held-out puzzle selection and 32 attempts per puzzle. It reports strict rule validity, exact target agreement, source-specific solve rates, and the probability of at least one solution versus the number of attempts. Confidence intervals bootstrap entire puzzles to preserve repeated-attempt groups.
-
-DFM Section 5.1 trains the initial-state-only variant from scratch with the same U-Net widths, CE objective, split, augmentations, optimizer settings, and total update target as the saved coloring-conditioned reference. Its default seed matches the reference seed; the smaller input head changes the parameter count slightly. It saves under a distinct checkpoint format and filename, without loading the retired second-run weights. Section 6.1 shows its solution trajectories. Section 7.1 compares repeated coloring conditioning against initial-state-only generation using paired retry curves and a per-puzzle scatter with an attempt-count slider. Each slider position k shows the probability of at least one solution within k attempts, estimated from all subsets of the recorded attempts. New comparison caches use the `queens7_dfm_conditioning_*` prefix.
-
-D3PM Section 7.1 loads the trained DFM independently of its own model and evaluates the same shared held-out puzzles with matching attempts and sampling steps. The comparison reports per-puzzle solvability and actual training counts.
-
-Comparison caches are validated against checkpoint SHA-256, dataset fingerprint, puzzle IDs, and sampling settings. The primary checkpoint names are `queens7_discrete_flow_matching.pt`, `queens7_discrete_flow_matching_initial_only.pt`, and `queens7_d3pm.pt`.
+Sampling uses 100 stochastic steps with absorbing EMPTY cells, without search or
+repair. Evaluation runs 32 real attempts per selected test puzzle (256 by default)
+and plots empirical pass@k, averaged over subsets of the recorded attempts, with
+a 95% interval from bootstrapping whole puzzles. Results include the checkpoint
+and dataset hashes. Evaluation recomputes outcomes when its cell is run.

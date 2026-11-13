@@ -1,4 +1,4 @@
-"""Load curated, already solved Queens puzzles and score proposed solutions.
+"""Load prepared synthetic Queens pairs and check proposed solutions.
 
 There is deliberately no puzzle generator, solver, or uniqueness search here.
 """
@@ -10,7 +10,7 @@ from pathlib import Path
 import numpy as np
 
 
-BOARD_SIZE = 7
+BOARD_SIZE = 8
 EMPTY = BOARD_SIZE
 
 
@@ -38,28 +38,37 @@ def puzzle_fingerprint(regions):
 
 
 def load_queens_dataset(directory):
-    """Read the local multi-source JSONL pairs; use their published solutions."""
+    """Read the stored 8x8 pairs; never generate or solve puzzles here."""
     directory = Path(directory)
     metadata = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
+    if metadata.get("board_size") != BOARD_SIZE:
+        raise ValueError("Expected the synthetic 8x8 Queens dataset.")
     raw_data = (directory / "puzzles.jsonl").read_bytes()
     if hashlib.sha256(raw_data).hexdigest() != metadata["data_sha256"]:
         raise ValueError("Dataset does not match its manifest; rebuild both files together.")
     records = [json.loads(line) for line in raw_data.decode("utf-8").splitlines() if line.strip()]
+    if len(records) != metadata["count"]:
+        raise ValueError("Record count does not match the manifest.")
     boards, targets = [], []
     for record in records:
         board = np.asarray(record["regions"], dtype=np.uint8)
         coordinates = np.asarray(record["queens"], dtype=np.int64)
         if board.shape != (BOARD_SIZE, BOARD_SIZE) or coordinates.shape != (BOARD_SIZE, 2):
             raise ValueError(f"Malformed stored pair: {record['id']}")
+        if (np.any(board >= BOARD_SIZE) or len(np.unique(board)) != BOARD_SIZE
+                or np.any(coordinates < 0) or np.any(coordinates >= BOARD_SIZE)
+                or record.get("unique_solution") is not True):
+            raise ValueError(f"Invalid prepared pair: {record['id']}")
         queens = np.zeros_like(board, dtype=bool)
         queens[coordinates[:, 0], coordinates[:, 1]] = True
+        if not bool(solution_checks(board, np.where(queens, board, EMPTY))["solved"]):
+            raise ValueError(f"Stored answer breaks the Queens rules: {record['id']}")
         boards.append(board)
         targets.append(queens)
     return {
         "regions": np.stack(boards),
         "queens": np.stack(targets),
-        "source_ids": np.asarray([record["id"] for record in records]),
-        "source_names": np.asarray([record["sources"][0]["name"] for record in records]),
+        "ids": np.asarray([record["id"] for record in records]),
         "fingerprints": np.asarray([record["fingerprint"] for record in records]),
         "records": records,
         "metadata": metadata,
