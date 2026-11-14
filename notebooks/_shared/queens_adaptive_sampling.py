@@ -81,8 +81,12 @@ def _sample_adaptive_dfm(model, coloring, *, risk_budget, tau, product_risk,
             if not len(active):
                 break
             current = state[active]
-            times = (cells - remaining[active]).float() / total_erasures
-            logits = model(current, times)[:, 0].flatten(1)
+            if model.use_time_conditioning:
+                times = (cells - remaining[active]).float() / total_erasures
+                logits = model(current, times)
+            else:
+                logits = model(current)
+            logits = logits[:, 0].flatten(1)
             log_p_empty = F.logsigmoid(logits)
             uniforms = torch.rand(log_p_empty.shape, device=device, generator=generator)
             limits = torch.finfo(uniforms.dtype)

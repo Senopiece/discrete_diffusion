@@ -1,4 +1,4 @@
-"""Queens DFM endpoint erasure logits from the current grid and scalar time."""
+"""Queens DFM endpoint erasure logits with optional time conditioning."""
 
 import torch
 from torch import nn
@@ -14,33 +14,41 @@ CHECKPOINT_FORMAT = "queens8_erasure_dfm_v1"
 class QueensDFM(nn.Module):
     """Predict one endpoint EMPTY logit per cell, shaped (B,1,N,N).
 
-    Inputs are nine one-hot state channels, two coordinate channels and time.
+    Inputs are nine one-hot state channels and two coordinate channels.
+    Optional time conditioning adds a learned timestep branch.
     Sigmoid converts each output logit to an endpoint erasure probability.
     """
 
     conditioning_mode = "initial_state_only"
 
     def __init__(self, board_size=BOARD_SIZE, base_channels=64, time_dim=128,
-                 time_embedding_scale=100.0):
+                 time_embedding_scale=100.0, use_time_conditioning=True):
         super().__init__()
         if board_size != BOARD_SIZE:
             raise ValueError("This checkpoint family uses 8x8 Queens boards.")
         self.board_size = int(board_size)
         self.num_states = self.board_size + 1
         self.empty_token = self.board_size
-        self.time_embedding_scale = float(time_embedding_scale)
+        self.use_time_conditioning = bool(use_time_conditioning)
+        if self.use_time_conditioning:
+            self.time_embedding_scale = float(time_embedding_scale)
         self.network = Denoiser(
             embedding_dim=self.num_states + 2, output_dim=1,
             base_channels=base_channels, time_dim=time_dim,
+            use_time_conditioning=self.use_time_conditioning,
         )
         axis = torch.linspace(-1, 1, self.board_size)
         rr, cc = torch.meshgrid(axis, axis, indexing="ij")
         self.register_buffer("coordinates", torch.stack((rr, cc))[None])
 
-    def forward(self, state, times):
+    def forward(self, state, times=None):
         channels = F.one_hot(state.long(), self.num_states).permute(0, 3, 1, 2).float()
         inputs = torch.cat((channels, self.coordinates.expand(len(state), -1, -1, -1)), 1)
-        return self.network(inputs, times * self.time_embedding_scale)
+        if self.use_time_conditioning:
+            if times is None:
+                raise ValueError("Times are required when time conditioning is enabled.")
+            return self.network(inputs, times * self.time_embedding_scale)
+        return self.network(inputs)
 
 
 @torch.no_grad()
@@ -70,8 +78,11 @@ def sample_queens_dfm(candidate, coloring, *, steps=100, seed=0, progress=None,
     candidate.eval()
     try:
         for step in range(steps):
-            times = torch.full((len(state),), step / steps, device=device)
-            logits = candidate(state, times)
+            if candidate.use_time_conditioning:
+                times = torch.full((len(state),), step / steps, device=device)
+                logits = candidate(state, times)
+            else:
+                logits = candidate(state)
             p_empty = logits[:, 0].sigmoid()
             jump = torch.rand(state.shape, device=device, generator=generator) < p_empty / (steps - step)
             state = torch.where(jump & (state != candidate.empty_token), candidate.empty_token, state)

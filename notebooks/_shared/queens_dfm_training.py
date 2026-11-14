@@ -49,20 +49,22 @@ class QueensDFMRun:
 
     def __init__(self, puzzles, checkpoint_path, *, device="cpu", seed=17,
                  batch_size=128, samples_per_epoch=4096, epochs=440,
-                 learning_rate=2e-4, weight_decay=1e-4, flow_steps=100, resume=True):
+                 learning_rate=2e-4, weight_decay=1e-4, use_time_conditioning=True, resume=True):
         self.puzzles = puzzles
         self.checkpoint_path = Path(checkpoint_path)
         self.seed = int(seed)
         self.device = torch.device(device)
         self.cuda_devices = list(range(torch.cuda.device_count())) if self.device.type == "cuda" else []
         self.batch_size, self.samples_per_epoch = int(batch_size), int(samples_per_epoch)
-        if self.batch_size < 1 or self.samples_per_epoch < 1 or epochs < 1 or flow_steps < 1:
-            raise ValueError("Batch size, epoch budget, samples per epoch and flow steps must be positive.")
+        if self.batch_size < 1 or self.samples_per_epoch < 1 or epochs < 1:
+            raise ValueError("Batch size, epoch budget and samples per epoch must be positive.")
         self.steps_per_epoch = math.ceil(self.samples_per_epoch / self.batch_size)
         self.target_steps = int(epochs) * self.steps_per_epoch
-        self.model_config = dict(board_size=BOARD_SIZE, base_channels=64,
-                                 time_dim=128, time_embedding_scale=100.0)
-        self.flow_steps = int(flow_steps)
+        self.model_config = dict(board_size=BOARD_SIZE, base_channels=64)
+        if use_time_conditioning:
+            self.model_config.update(time_dim=128, time_embedding_scale=100.0)
+        else:
+            self.model_config["use_time_conditioning"] = False
         self.splits = split_puzzles(puzzles["fingerprints"], seed=self.seed)
         self.learning_rate, self.weight_decay = float(learning_rate), float(weight_decay)
         self.history = dict(step=[], train_bce=[], validation_step=[], validation_bce=[],
@@ -97,7 +99,7 @@ class QueensDFMRun:
         torch.save(dict(
             format_version=CHECKPOINT_FORMAT, model_state_dict=self.model.state_dict(),
             optimizer_state_dict=self.optimizer.state_dict(), model_config=self.model_config,
-            history=self.history, global_step=self.global_step, flow_steps=self.flow_steps,
+            history=self.history, global_step=self.global_step,
             seed=self.seed,
             dataset_sha256=self.puzzles["metadata"]["data_sha256"],
             splits={name: torch.as_tensor(indices.copy()) for name, indices in self.splits.items()},
@@ -115,7 +117,6 @@ class QueensDFMRun:
             or saved.get("dataset_sha256") != self.puzzles["metadata"]["data_sha256"]
             or int(saved["seed"]) != self.seed
             or saved["model_config"] != self.model_config
-            or int(saved["flow_steps"]) != self.flow_steps
             or saved.get("training_config") != self._training_config()
             or any(not np.array_equal(saved["splits"][name].cpu().numpy(), values)
                    for name, values in self.splits.items())
@@ -143,7 +144,8 @@ class QueensDFMRun:
                 for time in (0.0, 0.2, 0.4, 0.6, 0.8, 0.95):
                     times = torch.full((len(coloring),), time, device=self.device)
                     state = _path(coloring, target, times, generator)
-                    loss = erasure_bce_loss(self.model(state, times), state, target).item()
+                    logits = self.model(state, times) if self.model.use_time_conditioning else self.model(state)
+                    loss = erasure_bce_loss(logits, state, target).item()
                     total += loss * len(coloring)
                     count += len(coloring)
             return total / count
@@ -182,7 +184,8 @@ class QueensDFMRun:
                         times = torch.rand(len(coloring), device=self.device)
                         state = _path(coloring, endpoint, times)
                         self.optimizer.zero_grad(set_to_none=True)
-                        loss = erasure_bce_loss(self.model(state, times), state, endpoint)
+                        logits = self.model(state, times) if self.model.use_time_conditioning else self.model(state)
+                        loss = erasure_bce_loss(logits, state, endpoint)
                         loss.backward()
                         torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
                         self.optimizer.step()

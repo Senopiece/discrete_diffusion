@@ -1,4 +1,4 @@
-"""A timestep-conditioned U-Net for grid endpoint prediction."""
+"""A U-Net for grid endpoint prediction with optional timestep conditioning."""
 
 import math
 
@@ -22,13 +22,15 @@ def sinusoidal_timestep_embedding(timesteps: torch.Tensor, dim: int) -> torch.Te
 
 
 class ResBlock(nn.Module):
-    """Residual convolution block with additive timestep conditioning."""
+    """Residual convolution block with optional additive timestep conditioning."""
 
-    def __init__(self, in_channels: int, out_channels: int, time_dim: int):
+    def __init__(self, in_channels: int, out_channels: int, time_dim: int | None):
         super().__init__()
         self.norm1 = nn.GroupNorm(8, in_channels)
         self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1)
-        self.time_projection = nn.Linear(time_dim, out_channels)
+        self.use_time_conditioning = time_dim is not None
+        if self.use_time_conditioning:
+            self.time_projection = nn.Linear(time_dim, out_channels)
         self.norm2 = nn.GroupNorm(8, out_channels)
         self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1)
         self.skip = (
@@ -37,15 +39,18 @@ class ResBlock(nn.Module):
             else nn.Conv2d(in_channels, out_channels, kernel_size=1)
         )
 
-    def forward(self, x: torch.Tensor, time_embedding: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, time_embedding: torch.Tensor | None = None) -> torch.Tensor:
         h = self.conv1(F.silu(self.norm1(x)))
-        h = h + self.time_projection(F.silu(time_embedding))[:, :, None, None]
+        if self.use_time_conditioning:
+            if time_embedding is None:
+                raise ValueError("A time embedding is required for this residual block.")
+            h = h + self.time_projection(F.silu(time_embedding))[:, :, None, None]
         h = self.conv2(F.silu(self.norm2(h)))
         return h + self.skip(x)
 
 
 class Denoiser(nn.Module):
-    """Predict per-cell targets from an input grid and timestep."""
+    """Predict per-cell targets with an optional timestep branch."""
 
     def __init__(
         self,
@@ -53,6 +58,7 @@ class Denoiser(nn.Module):
         output_dim: int | None = None,
         base_channels: int = 64,
         time_dim: int = 128,
+        use_time_conditioning: bool = True,
     ):
         super().__init__()
         if embedding_dim < 2:
@@ -64,32 +70,39 @@ class Denoiser(nn.Module):
         if base_channels % 8:
             raise ValueError("base_channels must be divisible by 8")
         c1, c2, c3 = base_channels, base_channels * 2, base_channels * 4
-        self.time_dim = time_dim
-        self.time_mlp = nn.Sequential(
-            nn.Linear(time_dim, time_dim * 4),
-            nn.SiLU(),
-            nn.Linear(time_dim * 4, time_dim),
-        )
+        self.use_time_conditioning = bool(use_time_conditioning)
+        if self.use_time_conditioning:
+            self.time_dim = time_dim
+            self.time_mlp = nn.Sequential(
+                nn.Linear(time_dim, time_dim * 4),
+                nn.SiLU(),
+                nn.Linear(time_dim * 4, time_dim),
+            )
+        block_time_dim = time_dim if self.use_time_conditioning else None
 
         self.input = nn.Conv2d(embedding_dim, c1, kernel_size=3, padding=1)
-        self.enc32 = ResBlock(c1, c1, time_dim)
+        self.enc32 = ResBlock(c1, c1, block_time_dim)
         self.down16 = nn.Conv2d(c1, c2, kernel_size=3, stride=2, padding=1)
-        self.enc16 = ResBlock(c2, c2, time_dim)
+        self.enc16 = ResBlock(c2, c2, block_time_dim)
         self.down8 = nn.Conv2d(c2, c3, kernel_size=3, stride=2, padding=1)
-        self.mid1 = ResBlock(c3, c3, time_dim)
-        self.mid2 = ResBlock(c3, c3, time_dim)
+        self.mid1 = ResBlock(c3, c3, block_time_dim)
+        self.mid2 = ResBlock(c3, c3, block_time_dim)
 
         self.up16 = nn.Conv2d(c3, c2, kernel_size=3, padding=1)
-        self.dec16 = ResBlock(c2 * 2, c2, time_dim)
+        self.dec16 = ResBlock(c2 * 2, c2, block_time_dim)
         self.up32 = nn.Conv2d(c2, c1, kernel_size=3, padding=1)
-        self.dec32 = ResBlock(c1 * 2, c1, time_dim)
+        self.dec32 = ResBlock(c1 * 2, c1, block_time_dim)
         self.output_norm = nn.GroupNorm(8, c1)
         self.output = nn.Conv2d(c1, output_dim, kernel_size=3, padding=1)
 
-    def forward(self, x: torch.Tensor, timesteps: torch.Tensor) -> torch.Tensor:
-        time_embedding = self.time_mlp(
-            sinusoidal_timestep_embedding(timesteps, self.time_dim)
-        )
+    def forward(self, x: torch.Tensor, timesteps: torch.Tensor | None = None) -> torch.Tensor:
+        time_embedding = None
+        if self.use_time_conditioning:
+            if timesteps is None:
+                raise ValueError("Timesteps are required when time conditioning is enabled.")
+            time_embedding = self.time_mlp(
+                sinusoidal_timestep_embedding(timesteps, self.time_dim)
+            )
 
         skip32 = self.enc32(self.input(x), time_embedding)
         skip16 = self.enc16(self.down16(skip32), time_embedding)

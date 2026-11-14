@@ -41,6 +41,7 @@ def load_trained_dfm(path, puzzles, *, device="cpu"):
         dataset_sha256=saved["dataset_sha256"], seed=int(saved["seed"]),
         optimizer_updates=int(saved["global_step"]),
         epochs_completed=int(saved["history"]["epochs_completed"]),
+        use_time_conditioning=model.use_time_conditioning,
     )
     return model, splits, info
 
@@ -81,8 +82,12 @@ def sample_confidence_dfm(model, coloring, *, steps=16, tau=1.0, seed=0,
     erased = 0
     try:
         for step in range(steps):
-            times = torch.full((len(state),), step / steps, device=device)
-            log_p_empty = F.logsigmoid(model(state, times)[:, 0])
+            if model.use_time_conditioning:
+                times = torch.full((len(state),), step / steps, device=device)
+                logits = model(state, times)
+            else:
+                logits = model(state)
+            log_p_empty = F.logsigmoid(logits[:, 0])
             cumulative = (2 * total_erasures * (step + 1) + steps) // (2 * steps)
             quota = cumulative - erased
             if quota:
