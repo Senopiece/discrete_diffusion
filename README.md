@@ -1,14 +1,14 @@
 # Queens 8x8 · Discrete Flow Matching
 
 One model transforms a full region coloring into queen colors and EMPTY cells.
-The coloring is the initial state. Each model call receives the current grid
-and time.
+The coloring is the initial state. Each model call receives the current grid,
+optionally conditioned on time.
 
 ## Run
 
 ```powershell
 uv sync
-uv run python scripts/generate_queens8.py --count 100000
+uv run python scripts/generate_queens8.py --count 10000000
 ```
 
 Generate the dataset once, then open
@@ -25,6 +25,42 @@ preserving connectivity, and checks uniqueness against every row/column
 permutation without touching queens. Rotations, reflections and color relabelings
 are deduplicated before the train/validation/test split.
 
+The generator uses all logical CPU cores by default. GIL-free Numba workers
+generate independent batches. Boundary moves update exact region-count
+histograms only for placements using the changed cell; connectivity is checked
+with 64-bit flood fills. Every accepted puzzle also passes an independent full
+uniqueness check. `--workers 8` selects a worker count, and `--batch-size 256`
+controls the number of candidates per batch. Output is reproducible for a fixed
+seed and batch size, independently of worker count.
+
+Generation writes preallocated arrays incrementally and saves progress every
+five seconds in `data/queens8/.generation/`. Continue an interrupted run with
+the same count, seed and batch size:
+
+```powershell
+uv run python scripts/generate_queens8.py --count 10000000 --resume
+```
+
+`--output PATH` selects a separate dataset directory. Completed arrays are
+published through an atomic manifest update; partial generation leaves the
+current dataset available. A compact fingerprint hash table performs exact
+deduplication with bounded memory (about 554 MB for ten million puzzles).
+
+The manifest references three NumPy arrays, all with dtype `uint8`:
+
+- `regions.npy`, shape `(count, 8, 8)`: region labels.
+- `queen_columns.npy`, shape `(count, 8)`: the queen's column in each row.
+- `fingerprints.npy`, shape `(count, 32)`: SHA-256 symmetry fingerprints.
+
+Together they use 104 bytes per puzzle: approximately 1.04 GB for ten million
+puzzles, including fingerprints. `load_queens_dataset` opens read-only memory
+maps. Training fetches individual pairs and constructs queen masks on demand;
+readable puzzle IDs are derived only for selected indices. Integrity checks
+stream file hashes and validate answers in bounded batches. Pass `verify=False`
+to skip those scans when reopening an already verified dataset. Seeded splits
+use indices and require about 80 MB for ten million puzzles. Checkpoints record
+the ordered dataset's identity; array storage has separate file checksums.
+
 Rules: one queen per row, column and region; queens cannot touch diagonally.
 Longer diagonals are allowed. Training augments puzzles and solutions together
 using rotations, reflections and color permutations.
@@ -40,7 +76,17 @@ the full grid and batch. The U-Net uses base width 64 and time
 width 128. Training batch size, augmented views per epoch and total epoch budget
 are configured in the notebook.
 
-The training plot updates in place. Checkpoints automatically save and resume
+An epoch draws `SAMPLES_PER_EPOCH` augmented pairs with replacement (4,096 by
+default), giving 32 optimizer updates at batch size 128. The training plot
+updates in place once per completed epoch and shows the sample-weighted mean
+train BCE alongside validation BCE, with epoch number on the horizontal axis.
+Validation uses a fixed subset of up to `VALIDATION_PUZZLES = 1024` puzzles at
+six times; all sampling notebooks use the same fixed `TEST_PUZZLES = 256` test
+puzzles. The subsets are prefixes of the seeded random held-out splits, and
+their size limits are saved in the checkpoint. Full split membership remains
+unchanged. Changing the validation subset clears its plotted validation history.
+
+Checkpoints automatically save and resume
 weights, optimizer, history, dataset hash, splits and RNG state to
 `artifacts/queens8/queens8_dfm.pt`. With `RESUME = True`, increasing `EPOCHS`
 continues from the saved optimizer step and history up to the new total budget.
@@ -56,7 +102,7 @@ sampling configuration.
 
 Trajectory examples use 100 stochastic steps with absorbing EMPTY cells.
 Evaluation uses 1, 2, 4, 8, 16, 32 and 64 generation
-steps on the same selected test puzzles (256 by default), with 32 real attempts
+steps on the fixed test subset (256 by default), with 32 real attempts
 per puzzle for each step budget. One plot compares all seven empirical pass@k
 curves in different colors, averaged over subsets of the recorded attempts, with
 95% bands from bootstrapping whole puzzles. Results include the step budgets,

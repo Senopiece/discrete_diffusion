@@ -132,8 +132,9 @@ def confidence_retry_plot(statistics, taus, budgets, *, previous=None,
     return view
 
 
-def risk_retry_plot(statistics, budgets, *, previous=None):
-    """Compare risk budgets by color with optional whole-puzzle-bootstrap bands."""
+def budget_retry_plot(statistics, budgets, *, previous=None,
+                      budget_label="Generation steps", budget_name="steps"):
+    """Compare budgets by color with optional whole-puzzle-bootstrap bands."""
     names = [f"{budget:g}" for budget in budgets]
     colors = ("#75A7FF", "#F4B66A", "#6DD3AC", "#CB9BFF", "#ED8596", "#56CDD8", "#D8CD7B")
     figure = go.Figure()
@@ -151,7 +152,7 @@ def risk_retry_plot(statistics, budgets, *, previous=None):
             keys.append((names[index], "95% interval"))
         figure.add_scatter(
             x=statistics["attempts"], y=100 * statistics["mean"][index],
-            name=f"δ = {budget:g}", mode="lines", line=dict(color=color, width=2.5),
+            name=f"{budget_name} = {budget:g}", mode="lines", line=dict(color=color, width=2.5),
             hovertemplate="%{x} attempts · %{y:.2f}%<extra>%{fullData.name}</extra>",
         )
         keys.append((names[index], "Solve probability"))
@@ -166,7 +167,7 @@ def risk_retry_plot(statistics, budgets, *, previous=None):
                    gridcolor="rgba(148,163,184,0.12)", zeroline=False),
     )
     groups = [
-        dict(id="budget", label="Risk budget δ", options=names, multiple=True,
+        dict(id="budget", label=budget_label, options=names, multiple=True,
              samples=[dict(color=colors[i % len(colors)]) for i in range(len(budgets))]),
         dict(id="layers", label="Layers", options=["Solve probability", "95% interval"], multiple=True),
     ]
@@ -174,3 +175,11 @@ def risk_retry_plot(statistics, budgets, *, previous=None):
     if previous is not None:
         previous.close()
     return view
+
+
+def risk_retry_plot(statistics, budgets, *, previous=None):
+    """Compare risk budgets with independent curve and uncertainty filters."""
+    return budget_retry_plot(
+        statistics, budgets, previous=previous,
+        budget_label="Risk budget δ", budget_name="δ",
+    )

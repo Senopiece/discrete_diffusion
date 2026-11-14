@@ -9,6 +9,64 @@ import numpy as np
 
 BOARD_SIZE = 8
 EMPTY = BOARD_SIZE
+ARRAY_SHAPES = {
+    "regions": (BOARD_SIZE, BOARD_SIZE),
+    "queen_columns": (BOARD_SIZE,),
+    "fingerprints": (32,),
+}
+DATASET_VERSION = "queens8_arrays_v1"
+DEFAULT_VALIDATION_PUZZLES = 1024
+DEFAULT_TEST_PUZZLES = 256
+
+
+def file_sha256(path):
+    """Hash a file with bounded memory."""
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as stream:
+        for block in iter(lambda: stream.read(8 * 1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def array_manifest(directory):
+    """Describe the three compact arrays and their storage checksums."""
+    directory = Path(directory)
+    return {
+        name: dict(file=f"{name}.npy", sha256=file_sha256(directory / f"{name}.npy"))
+        for name in ARRAY_SHAPES
+    }
+
+
+class PuzzleIds:
+    """Materialize readable identifiers only for the requested puzzle indices."""
+
+    def __init__(self, fingerprints):
+        self.fingerprints = fingerprints
+
+    def __len__(self):
+        return len(self.fingerprints)
+
+    def __getitem__(self, index):
+        selected = self.fingerprints[index]
+        if selected.ndim == 1:
+            return f"q8_{selected[:8].tobytes().hex()}"
+        ids = [f"q8_{digest[:8].tobytes().hex()}" for digest in selected.reshape(-1, 32)]
+        return np.asarray(ids, dtype="U19").reshape(selected.shape[:-1])
+
+
+def validate_pairs(regions, queen_columns, chunk_size=32768):
+    """Check stored answers in bounded batches without constructing grid masks."""
+    expected = np.arange(BOARD_SIZE)
+    for start in range(0, len(regions), chunk_size):
+        boards = regions[start:start + chunk_size]
+        columns = queen_columns[start:start + chunk_size]
+        if np.any(boards >= BOARD_SIZE) or np.any(columns >= BOARD_SIZE):
+            raise ValueError(f"Invalid region or queen coordinate near puzzle {start}.")
+        colors = boards[np.arange(len(boards))[:, None], expected, columns]
+        if (not np.all(np.sort(columns, axis=1) == expected)
+                or not np.all(np.sort(colors, axis=1) == expected)
+                or np.any(np.abs(np.diff(columns.astype(np.int16), axis=1)) == 1)):
+            raise ValueError(f"Stored answer breaks the Queens rules near puzzle {start}.")
 
 
 def normalize_regions(regions):
@@ -34,53 +92,39 @@ def puzzle_fingerprint(regions):
     return hashlib.sha256(min(variants)).hexdigest()
 
 
-def load_queens_dataset(directory):
-    """Read stored 8x8 pairs and validate their integrity and answers."""
+def load_queens_dataset(directory, *, verify=True):
+    """Memory-map compact pairs; optionally stream checksums and validate answers."""
     directory = Path(directory)
     metadata = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
-    if metadata.get("board_size") != BOARD_SIZE:
-        raise ValueError("Expected the synthetic 8x8 Queens dataset.")
-    raw_data = (directory / "puzzles.jsonl").read_bytes()
-    if hashlib.sha256(raw_data).hexdigest() != metadata["data_sha256"]:
-        raise ValueError("Dataset does not match its manifest; rebuild both files together.")
-    records = [json.loads(line) for line in raw_data.decode("utf-8").splitlines() if line.strip()]
-    if len(records) != metadata["count"]:
-        raise ValueError("Record count does not match the manifest.")
-    boards, targets = [], []
-    for record in records:
-        board = np.asarray(record["regions"], dtype=np.uint8)
-        coordinates = np.asarray(record["queens"], dtype=np.int64)
-        if board.shape != (BOARD_SIZE, BOARD_SIZE) or coordinates.shape != (BOARD_SIZE, 2):
-            raise ValueError(f"Malformed stored pair: {record['id']}")
-        if (np.any(board >= BOARD_SIZE) or len(np.unique(board)) != BOARD_SIZE
-                or np.any(coordinates < 0) or np.any(coordinates >= BOARD_SIZE)
-                or record.get("unique_solution") is not True):
-            raise ValueError(f"Invalid prepared pair: {record['id']}")
-        queens = np.zeros_like(board, dtype=bool)
-        queens[coordinates[:, 0], coordinates[:, 1]] = True
-        if not bool(solution_checks(board, np.where(queens, board, EMPTY))["solved"]):
-            raise ValueError(f"Stored answer breaks the Queens rules: {record['id']}")
-        boards.append(board)
-        targets.append(queens)
-    return {
-        "regions": np.stack(boards),
-        "queens": np.stack(targets),
-        "ids": np.asarray([record["id"] for record in records]),
-        "fingerprints": np.asarray([record["fingerprint"] for record in records]),
-        "records": records,
-        "metadata": metadata,
-    }
+    if (metadata.get("board_size") != BOARD_SIZE or metadata.get("version") != DATASET_VERSION
+            or metadata.get("count", 0) < 3):
+        raise ValueError("Expected a compact synthetic 8x8 Queens dataset.")
+    arrays = {}
+    try:
+        for name, shape in ARRAY_SHAPES.items():
+            entry = metadata["arrays"][name]
+            path = directory / entry["file"]
+            array = arrays[name] = np.load(path, mmap_mode="r", allow_pickle=False)
+            if array.dtype != np.uint8 or array.shape != (metadata["count"], *shape):
+                raise ValueError(f"Invalid shape or dtype for {name}.")
+            if verify and file_sha256(path) != entry["sha256"]:
+                raise ValueError(f"{name} does not match its manifest checksum.")
+        if verify:
+            validate_pairs(arrays["regions"], arrays["queen_columns"])
+    except BaseException:
+        for array in arrays.values():
+            array._mmap.close()
+        raise
+    return {**arrays, "ids": PuzzleIds(arrays["fingerprints"]), "metadata": metadata}
 
 
-def split_puzzles(fingerprints, seed=17, validation_fraction=0.15, test_fraction=0.2):
-    """Split distinct puzzles before augmentation, without symmetry leakage."""
-    fingerprints = np.asarray(fingerprints)
-    if len(set(fingerprints.tolist())) != len(fingerprints):
-        raise ValueError("Deduplicate puzzle symmetries before splitting.")
+def split_puzzles(count, seed=17, validation_fraction=0.15, test_fraction=0.2):
+    """Split generator-deduplicated puzzle indices before augmentation."""
+    count = int(count)
     if not (0 < validation_fraction < 1 and 0 < test_fraction < 1
             and validation_fraction + test_fraction < 1):
         raise ValueError("Fractions must leave nonempty train, validation, and test sets.")
-    order = np.random.default_rng(seed).permutation(len(fingerprints))
+    order = np.random.default_rng(seed).permutation(count)
     n_validation = max(1, round(len(order) * validation_fraction))
     n_test = max(1, round(len(order) * test_fraction))
     if n_validation + n_test >= len(order):
@@ -89,6 +133,18 @@ def split_puzzles(fingerprints, seed=17, validation_fraction=0.15, test_fraction
         "test": order[:n_test],
         "validation": order[n_test : n_test + n_validation],
         "train": order[n_test + n_validation :],
+    }
+
+
+def fixed_evaluation_splits(splits, *, validation_puzzles=DEFAULT_VALIDATION_PUZZLES,
+                            test_puzzles=DEFAULT_TEST_PUZZLES):
+    """Select fixed prefixes of the seeded, randomly ordered held-out splits."""
+    if validation_puzzles < 1 or test_puzzles < 1:
+        raise ValueError("Validation and test subset sizes must be positive.")
+    return {
+        "train": splits["train"],
+        "validation": splits["validation"][:int(validation_puzzles)],
+        "test": splits["test"][:int(test_puzzles)],
     }
 
 

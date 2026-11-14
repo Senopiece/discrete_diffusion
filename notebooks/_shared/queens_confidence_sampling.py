@@ -8,6 +8,7 @@ import numpy as np
 import torch
 from torch.nn import functional as F
 
+from .queens_data import fixed_evaluation_splits
 from .queens_dfm_inference import CHECKPOINT_FORMAT, QueensDFM
 
 
@@ -32,6 +33,7 @@ def load_trained_dfm(path, puzzles, *, device="cpu"):
     if (len(all_indices) != len(puzzles["regions"])
             or not np.array_equal(np.sort(all_indices), np.arange(len(all_indices)))):
         raise ValueError("The checkpoint split does not partition the current dataset.")
+    splits = fixed_evaluation_splits(splits, **saved.get("evaluation_config", {}))
     with torch.random.fork_rng(devices=[]):
         model = QueensDFM(**saved["model_config"])
     model.load_state_dict(saved["model_state_dict"], strict=True)
@@ -42,6 +44,7 @@ def load_trained_dfm(path, puzzles, *, device="cpu"):
         optimizer_updates=int(saved["global_step"]),
         epochs_completed=int(saved["history"]["epochs_completed"]),
         use_time_conditioning=model.use_time_conditioning,
+        validation_puzzles=len(splits["validation"]), test_puzzles=len(splits["test"]),
     )
     return model, splits, info
 

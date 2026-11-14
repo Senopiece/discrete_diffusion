@@ -8,7 +8,10 @@ import torch
 from torch.nn import functional as F
 from torch.utils.data import DataLoader, Dataset, RandomSampler
 
-from .queens_data import BOARD_SIZE, EMPTY, split_puzzles
+from .queens_data import (
+    BOARD_SIZE, EMPTY, DEFAULT_TEST_PUZZLES, DEFAULT_VALIDATION_PUZZLES,
+    fixed_evaluation_splits, split_puzzles,
+)
 from .queens_dfm_inference import CHECKPOINT_FORMAT, QueensDFM
 
 
@@ -22,7 +25,9 @@ class _QueensViews(Dataset):
     def __getitem__(self, position):
         index = int(self.indices[position])
         board = torch.from_numpy(self.puzzles["regions"][index].astype(np.int64))
-        queens = torch.from_numpy(self.puzzles["queens"][index].copy())
+        columns = torch.from_numpy(self.puzzles["queen_columns"][index].astype(np.int64))
+        queens = torch.zeros((BOARD_SIZE, BOARD_SIZE), dtype=torch.bool)
+        queens[torch.arange(BOARD_SIZE), columns] = True
         if self.augment:
             turns = int(torch.randint(4, ()).item())
             board, queens = torch.rot90(board, turns), torch.rot90(queens, turns)
@@ -44,12 +49,27 @@ def erasure_bce_loss(logits, state, endpoint):
     return (losses * (state != EMPTY)).mean()
 
 
+def epoch_loss_history(history, *, samples_per_epoch, batch_size):
+    """Aggregate completed epochs, weighting each batch by its sample count."""
+    steps_per_epoch = math.ceil(samples_per_epoch / batch_size)
+    completed = len(history["train_bce"]) // steps_per_epoch
+    losses = np.asarray(history["train_bce"][:completed * steps_per_epoch], dtype=float)
+    weights = np.minimum(batch_size, samples_per_epoch - np.arange(steps_per_epoch) * batch_size)
+    means = losses.reshape(completed, steps_per_epoch) @ weights / samples_per_epoch
+    return dict(
+        epoch=np.arange(1, completed + 1), train_bce=means,
+        validation_epoch=np.asarray(history["validation_step"], dtype=float) / steps_per_epoch,
+        validation_bce=np.asarray(history["validation_bce"], dtype=float),
+    )
+
+
 class QueensDFMRun:
     """One model, one synthetic dataset, and an explicit optimizer-update budget."""
 
     def __init__(self, puzzles, checkpoint_path, *, device="cpu", seed=17,
                  batch_size=128, samples_per_epoch=4096, epochs=440,
-                 learning_rate=2e-4, weight_decay=1e-4, use_time_conditioning=True, resume=True):
+                 learning_rate=2e-4, weight_decay=1e-4, use_time_conditioning=True, resume=True,
+                 validation_puzzles=DEFAULT_VALIDATION_PUZZLES, test_puzzles=DEFAULT_TEST_PUZZLES):
         self.puzzles = puzzles
         self.checkpoint_path = Path(checkpoint_path)
         self.seed = int(seed)
@@ -65,7 +85,9 @@ class QueensDFMRun:
             self.model_config.update(time_dim=128, time_embedding_scale=100.0)
         else:
             self.model_config["use_time_conditioning"] = False
-        self.splits = split_puzzles(puzzles["fingerprints"], seed=self.seed)
+        self.splits = split_puzzles(len(puzzles["regions"]), seed=self.seed)
+        self.evaluation_config = dict(validation_puzzles=int(validation_puzzles), test_puzzles=int(test_puzzles))
+        self.evaluation_splits = fixed_evaluation_splits(self.splits, **self.evaluation_config)
         self.learning_rate, self.weight_decay = float(learning_rate), float(weight_decay)
         self.history = dict(step=[], train_bce=[], validation_step=[], validation_bce=[],
                             epochs_completed=0)
@@ -105,6 +127,7 @@ class QueensDFMRun:
             splits={name: torch.as_tensor(indices.copy()) for name, indices in self.splits.items()},
             torch_rng_state=self.cpu_rng, cuda_rng_state_all=self.cuda_rng,
             training_config=self._training_config(), conditioning_mode="initial_state_only",
+            evaluation_config=self.evaluation_config,
             target_optimizer_steps=self.target_steps,
         ), temporary)
         temporary.replace(self.checkpoint_path)
@@ -125,6 +148,10 @@ class QueensDFMRun:
         self.model.load_state_dict(saved["model_state_dict"])
         self.optimizer.load_state_dict(saved["optimizer_state_dict"])
         self.history, self.global_step = saved["history"], int(saved["global_step"])
+        previous_size = saved.get("evaluation_config", {}).get("validation_puzzles", len(self.splits["validation"]))
+        if not np.array_equal(self.splits["validation"][:previous_size], self.evaluation_splits["validation"]):
+            self.history["validation_step"] = []
+            self.history["validation_bce"] = []
         self.cpu_rng = saved["torch_rng_state"].clone()
         self.cuda_rng = saved["cuda_rng_state_all"] if self.cuda_devices else []
         if self.cuda_devices and len(self.cuda_rng) != len(self.cuda_devices):
@@ -159,12 +186,7 @@ class QueensDFMRun:
             raise ValueError("Use positive target steps and nonnegative save interval.")
         self.target_steps = target
         training = _QueensViews(self.puzzles, self.splits["train"], True)
-        validation = _QueensViews(self.puzzles, self.splits["validation"], False)
-        train_loader = DataLoader(
-            training, batch_size=self.batch_size,
-            sampler=RandomSampler(training, replacement=True, num_samples=self.samples_per_epoch),
-            num_workers=0, pin_memory=self.device.type == "cuda",
-        )
+        validation = _QueensViews(self.puzzles, self.evaluation_splits["validation"], False)
         validation_loader = DataLoader(validation, batch_size=self.batch_size, shuffle=False, num_workers=0)
         if self.global_step >= target:
             if progress:
@@ -176,6 +198,12 @@ class QueensDFMRun:
                 torch.cuda.set_rng_state_all(self.cuda_rng)
             try:
                 while self.global_step < target:
+                    remaining = self.samples_per_epoch - (self.global_step % self.steps_per_epoch) * self.batch_size
+                    train_loader = DataLoader(
+                        training, batch_size=self.batch_size,
+                        sampler=RandomSampler(training, replacement=True, num_samples=remaining),
+                        num_workers=0, pin_memory=self.device.type == "cuda",
+                    )
                     self.model.train()
                     for coloring, endpoint in train_loader:
                         if self.global_step >= target:
